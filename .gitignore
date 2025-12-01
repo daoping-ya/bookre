@@ -1,0 +1,45 @@
+node_modules/
+dist/
+dist-electron/
+*.log
+.DS_Store
+*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+backend/data/
+backend/temp/
+venv/
+env/
+*.egg-info/
+
+# EasyVoice
+packages/easyvoice/packages/backend/data/
+packages/easyvoice/packages/backend/temp/
+easyVoice_temp/
+
+# Test Data
+test_books/
+test_audio.mp3
+test_audio_fixed.mp3
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
