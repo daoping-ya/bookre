@@ -1008,65 +1008,6 @@ async function fetchAudioPage(pageIndex) {
   while (isFetchingGlobal) {
     await new Promise(r => setTimeout(r, 100))
   }
-  
-  currentFetchController = new AbortController()
-  isFetchingGlobal = true
-  
-  try {
-    const response = await fetch('http://localhost:8000/api/voice/synthesize', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        text: fullText,
-        voice_model: currentVoice,
-        rate: rateStr,
-        stream: false
-      }),
-      signal: currentFetchController.signal
-    })
-    
-    if (!response.ok) throw new Error(await response.text())
-    
-    const data = await response.json()
-    console.log('🔍 TTS 响应数据:', data) // 调试日志
-    
-    // 检查数据结构并适配
-    let audioBlobUrl, metadata
-    
-    // 新版后端返回 Base64 数据 (data.audio_base64)
-    if (data.data && data.data.audio_base64) {
-      const base64 = data.data.audio_base64
-      const binaryString = window.atob(base64)
-      const len = binaryString.length
-      const bytes = new Uint8Array(len)
-      for (let i = 0; i < len; i++) {
-        bytes[i] = binaryString.charCodeAt(i)
-      }
-      const blob = new Blob([bytes], { type: 'audio/mpeg' })
-      audioBlobUrl = URL.createObjectURL(blob)
-      metadata = data.data.metadata || []
-      console.log('✅ 已将 Base64 转换为 Blob URL')
-    } 
-    // 兼容旧版 URL 方式 (以防后端回滚)
-    else if (data.data && data.data.audio_url) {
-      audioBlobUrl = data.data.audio_url
-      if (audioBlobUrl.startsWith('/')) {
-        audioBlobUrl = 'http://localhost:8000' + audioBlobUrl
-      }
-      metadata = data.data.metadata || []
-    } else {
-      // 尝试其他可能的字段
-      const url = data.audio_url || data.audio || (data.data && data.data.audio)
-      if (url) {
-        audioBlobUrl = url
-        if (audioBlobUrl.startsWith('/')) {
-          audioBlobUrl = 'http://localhost:8000' + audioBlobUrl
-        }
-        metadata = data.metadata || data.timing_metadata || (data.data && data.data.metadata) || []
-      } else {
-        console.error('❌ 不支持的响应格式:', data)
-        throw new Error('TTS 响应格式错误，未找到音频数据')
-      }
     }
     
     const result = {
