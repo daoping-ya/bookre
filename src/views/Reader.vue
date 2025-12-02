@@ -713,22 +713,45 @@ async function playVoice() {
   console.log('=== 开始 TTS 播放流程 (SSML) ===')
   if (!currentPageContent.value) return
   
-  // 【关键修复】移动端音频解锁
-  // 必须在用户点击事件的同步堆栈中立即创建/恢复 AudioContext 或 Audio 对象
+  // 【移动端音频解锁 - 强化版】
+  // 策略：在用户点击的同步堆栈中立即创建Audio并播放可听见的短音
   if (!audioPlayer.value) {
     audioPlayer.value = new Audio()
+    // iOS 兼容性设置
+    audioPlayer.value.setAttribute('playsinline', 'true')
+    audioPlayer.value.setAttribute('webkit-playsinline', 'true')
+    console.log('✅ 创建新的 Audio 对象')
   }
   
-  // 播放一段极短的静音来解锁音频引擎
-  // 这是一个 base64 编码的 0.1秒静音 WAV 文件
-  const silentWav = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA'
-  audioPlayer.value.src = silentWav
+  // 使用一个极短的可听见音频来解锁（比静音更可靠）
+  // 0.1秒 440Hz 正弦波（A4音符）
+  const unlockAudio = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA='
+  audioPlayer.value.src = unlockAudio
+  audioPlayer.value.volume = 0.01 // 设置极低音量（几乎听不见但不是静音）
+  
+  let unlockSuccess = false
   try {
-    await audioPlayer.value.play()
-    console.log('🔊 音频引擎解锁成功')
+    const playPromise = audioPlayer.value.play()
+    if (playPromise !== undefined) {
+      await playPromise
+      unlockSuccess = true
+      console.log('🔊 音频引擎解锁成功（可听见音）')
+    }
   } catch (e) {
-    console.warn('⚠️ 音频引擎解锁失败 (可能需要用户交互)', e)
+    console.error('❌ 音频解锁失败:', e.name, e.message)
+    // 尝试备用方案：用户可能需要再次点击
+    alert('移动端首次播放需要您的授权，请再次点击播放按钮')
+    isPlaying.value = false
+    return
   }
+  
+  // 等待100ms让音频引擎完全激活
+  if (unlockSuccess) {
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  
+  // 恢复正常音量
+  audioPlayer.value.volume = 1.0
 
   isPlaying.value = true
   playingPageIndex.value = currentPage.value // 记录当前播放的页码
