@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import axios from 'axios'
+import { getDeviceId } from '@/utils/device'
 
 const API_BASE = '/api'
 
@@ -18,9 +19,30 @@ export const useBooksStore = defineStore('books', {
     actions: {
         // 加载书籍列表 (仅元数据)
         async loadBooks() {
+            // 📦 优化：尝试从缓存读取
+            const cached = sessionStorage.getItem('books_list')
+            const deviceId = getDeviceId()
+
+            if (cached) {
+                try {
+                    this.books = JSON.parse(cached)
+                    console.log('📦 使用缓存的书籍列表，瞬间加载！')
+                    return
+                } catch (e) {
+                    console.warn('缓存解析失败，重新加载', e)
+                    sessionStorage.removeItem('books_list')
+                }
+            }
+
+            // 🌐 从后端加载
             try {
-                const res = await axios.get(`${API_BASE}/books`)
+                console.log('🌐 从后端加载书籍列表')
+                const res = await axios.get(`${API_BASE}/books?deviceId=${deviceId}`)
                 this.books = res.data
+
+                // 💾 保存到缓存
+                sessionStorage.setItem('books_list', JSON.stringify(this.books))
+                console.log('💾 书籍列表已缓存')
             } catch (error) {
                 console.error('加载书籍列表失败:', error)
             }
@@ -82,6 +104,9 @@ export const useBooksStore = defineStore('books', {
                 // 添加到本地列表
                 this.books.unshift(newBook)
 
+                // 🧼 清除缓存，确保数据一致
+                sessionStorage.removeItem('books_list')
+
                 return newBook
             } catch (error) {
                 console.error('导入书籍失败:', error)
@@ -131,9 +156,12 @@ export const useBooksStore = defineStore('books', {
                 book.currentChapter = chapter
                 book.lastReadAt = new Date().toISOString()
 
+                const deviceId = getDeviceId()
+
                 // 发送部分更新到后端
                 try {
                     await axios.patch(`${API_BASE}/books/${bookId}`, {
+                        deviceId: deviceId,
                         progress: book.progress,
                         currentPage: book.currentPage,
                         currentChapter: book.currentChapter,
@@ -149,6 +177,9 @@ export const useBooksStore = defineStore('books', {
             try {
                 await axios.delete(`${API_BASE}/books/${bookId}`)
                 this.books = this.books.filter(book => book.id !== bookId)
+
+                // 🧼 清除缓存
+                sessionStorage.removeItem('books_list')
             } catch (e) {
                 console.error('删除书籍失败:', e)
                 alert('删除失败: ' + e.message)

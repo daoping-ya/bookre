@@ -104,7 +104,7 @@ BOOKS_DATA_DIR = Path("data/books")
 BOOKS_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 @app.get("/api/books")
-async def list_books():
+async def list_books(deviceId: Optional[str] = None):
     """列出所有书籍 (仅元数据)"""
     try:
         import json
@@ -113,10 +113,38 @@ async def list_books():
             try:
                 with open(file_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    # 移除章节内容以减少传输量
-                    if "chapters" in data:
-                        del data["chapters"]
-                    books.append(data)
+                    
+                    # 构建返回数据
+                    book_meta = {
+                        'id': data.get('id'),
+                        'title': data.get('title'),
+                        'author': data.get('author'),
+                        'cover': data.get('cover'),
+                        'format': data.get('format'),
+                        'totalPages': data.get('totalPages'),
+                        'createdAt': data.get('createdAt'),
+                        'filePath': data.get('filePath')
+                    }
+                    
+                    # 如果提供了 deviceId，返回该设备的进度
+                    if deviceId and 'devices' in data:
+                        device_data = data['devices'].get(deviceId, {})
+                        book_meta.update({
+                            'progress': device_data.get('progress', 0),
+                            'currentPage': device_data.get('currentPage', 0),
+                            'currentChapter': device_data.get('currentChapter', 0),
+                            'lastReadAt': device_data.get('lastReadAt', data.get('createdAt'))
+                        })
+                    else:
+                        # 兼容旧数据或无设备ID的情况
+                        book_meta.update({
+                            'progress': data.get('progress', 0),
+                            'currentPage': data.get('currentPage', 0),
+                            'currentChapter': data.get('currentChapter', 0),
+                            'lastReadAt': data.get('lastReadAt', data.get('createdAt'))
+                        })
+                    
+                    books.append(book_meta)
             except Exception as e:
                 logger.warning(f"读取书籍文件失败 {file_path}: {e}")
         
@@ -182,7 +210,7 @@ async def delete_book(book_id: str):
 
 @app.patch("/api/books/{book_id}")
 async def update_book_metadata(book_id: str, request: Request):
-    """更新书籍元数据 (不覆盖章节)"""
+    """更新书籍元数据 (支持多设备)"""
     try:
         import json
         updates = await request.json()
@@ -192,12 +220,31 @@ async def update_book_metadata(book_id: str, request: Request):
             
         with open(file_path, "r", encoding="utf-8") as f:
             data = json.load(f)
+        
+        # 提取 deviceId
+        device_id = updates.pop('deviceId', None)
+        
+        if device_id:
+            # 多设备模式：更新特定设备的进度
+            if 'devices' not in data:
+                data['devices'] = {}
             
-        # 更新字段 (排除 chapters 以防万一)
-        if "chapters" in updates:
-            del updates["chapters"]
+            # 更新设备进度
+            if device_id not in data['devices']:
+                data['devices'][device_id] = {}
             
-        data.update(updates)
+            # 只更新进度相关字段
+            progress_fields = ['progress', 'currentPage', 'currentChapter', 'lastReadAt']
+            for field in progress_fields:
+                if field in updates:
+                    data['devices'][device_id][field] = updates[field]
+            
+            logger.info(f"更新设备 {device_id} 的进度: {book_id}")
+        else:
+            # 兼容旧版：直接更新根字段
+            if 'chapters' in updates:
+                del updates['chapters']
+            data.update(updates)
         
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)

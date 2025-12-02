@@ -248,11 +248,11 @@ const selectedVoice = ref('zh-CN-YunxiNeural')
 const voiceSpeed = ref(1.0)
 const audioPlayer = ref(null)
 const audioCache = new Map() // Map<pageIndex, BlobURL>
+const pendingRequests = new Map() // Map<cacheKey, Promise> 跟踪正在进行的请求
 const preloadCount = 2 // 预加载页数（降低以减轻 EasyVoice 负载）
 const currentParaIndex = ref(0) // 当前播放的段落索引
 const playingPageIndex = ref(-1) // 正在播放的音频对应的页码
 let currentFetchController = null // 当前请求的控制器
-let isFetchingGlobal = false // 全局请求锁
 let pageTurnTimer = null    // 用于滚轮翻页的冷却计时器
 let scrollBoundaryCounter = 0 // 连续滚动到边界的计数器
 
@@ -982,6 +982,7 @@ function playParagraph(index) {
   }
 }
 
+
 async function fetchAudioPage(pageIndex) {
   const content = pages.value[pageIndex]
   if (!content) throw new Error('内容为空')
@@ -995,108 +996,132 @@ async function fetchAudioPage(pageIndex) {
   
   const cacheKey = `${pageIndex}_${currentVoice}_${rateStr}_full`
   
+  // 1. 检查缓存
   if (audioCache.has(cacheKey)) {
+    console.log(`💾 使用缓存: 第${pageIndex}页`)
     return audioCache.get(cacheKey)
   }
 
-  while (isFetchingGlobal) {
-    await new Promise(r => setTimeout(r, 100))
+  // 2. 检查是否已有正在进行的请求
+  if (pendingRequests.has(cacheKey)) {
+    console.log(`⏳ 等待现有请求: 第${pageIndex}页`)
+    return await pendingRequests.get(cacheKey)
   }
-  currentFetchController = new AbortController()
-  isFetchingGlobal = true
   
-  try {
-    const response = await fetch('/api/voice/synthesize', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        text: fullText,
-        voice_model: currentVoice,
-        rate: rateStr,
-        stream: false
-      }),
-      signal: currentFetchController.signal
-    })
+  // 3. 创建新请求
+  console.log(`🚀 开始新请求: 第${pageIndex}页`)
+  const requestPromise = (async () => {
+    currentFetchController = new AbortController()
     
-    if (!response.ok) throw new Error(await response.text())
-    
-    const data = await response.json()
-    console.log('🔍 TTS 响应数据:', data) // 调试日志
-    
-    // 检查数据结构并适配
-    let audioBlobUrl, metadata
-    
-    // 新版后端返回 Base64 数据 (data.data.audio_base64)
-    if (data.data && data.data.audio_base64) {
-      const base64 = data.data.audio_base64
-      const binaryString = window.atob(base64)
-      const len = binaryString.length
-      const bytes = new Uint8Array(len)
-      for (let i = 0; i < len; i++) {
-        bytes[i] = binaryString.charCodeAt(i)
-      }
-      const blob = new Blob([bytes], { type: 'audio/mpeg' })
-      audioBlobUrl = URL.createObjectURL(blob)
-      metadata = data.data.metadata || []
-      console.log('✅ 已将 Base64 转换为 Blob URL')
-    } 
-    // 兼容旧版 URL 方式 (以防后端回滚)
-    else if (data.data && data.data.audio_url) {
-      audioBlobUrl = data.data.audio_url
-      // 移除硬编码的 localhost，使用相对路径
-      metadata = data.data.metadata || []
-    } else {
-      // 尝试其他可能的字段
-      const url = data.audio_url || data.audio || (data.data && data.data.audio)
-      if (url) {
-        audioBlobUrl = url
-        // 移除硬编码的 localhost，使用相对路径
-        metadata = data.metadata || data.timing_metadata || (data.data && data.data.metadata) || []
+    try {
+      const response = await fetch('/api/voice/synthesize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: fullText,
+          voice_model: currentVoice,
+          rate: rateStr,
+          stream: false
+        }),
+        signal: currentFetchController.signal
+      })
+      
+      if (!response.ok) throw new Error(await response.text())
+      
+      const data = await response.json()
+      console.log(`🔍 TTS 响应: 第${pageIndex}页`)
+      
+      // 检查数据结构并适配
+      let audioBlobUrl, metadata
+      
+      // 新版后端返回 Base64 数据 (data.data.audio_base64)
+      if (data.data && data.data.audio_base64) {
+        const base64 = data.data.audio_base64
+        const binaryString = window.atob(base64)
+        const len = binaryString.length
+        const bytes = new Uint8Array(len)
+        for (let i = 0; i < len; i++) {
+          bytes[i] = binaryString.charCodeAt(i)
+        }
+        const blob = new Blob([bytes], { type: 'audio/mpeg' })
+        audioBlobUrl = URL.createObjectURL(blob)
+        metadata = data.data.metadata || []
+        console.log(`✅ Base64→Blob: 第${pageIndex}页`)
+      } 
+      // 兼容旧版 URL 方式 (以防后端回滚)
+      else if (data.data && data.data.audio_url) {
+        audioBlobUrl = data.data.audio_url
+        metadata = data.data.metadata || []
       } else {
-        console.error('❌ 不支持的响应格式:', data)
-        throw new Error('TTS 响应格式错误，未找到音频数据')
+        // 尝试其他可能的字段
+        const url = data.audio_url || data.audio || (data.data && data.data.audio)
+        if (url) {
+          audioBlobUrl = url
+          metadata = data.metadata || data.timing_metadata || (data.data && data.data.metadata) || []
+        } else {
+          console.error('❌ 不支持的响应格式:', data)
+          throw new Error('TTS 响应格式错误，未找到音频数据')
+        }
       }
-    }
-    
-    const result = {
-      url: audioBlobUrl,
-      metadata: metadata,
-      isBlob: audioBlobUrl.startsWith('blob:')
-    }
-    
-    // 如果旧缓存存在且是 Blob，先释放
-    if (audioCache.has(cacheKey)) {
-      const old = audioCache.get(cacheKey)
-      if (old.isBlob) URL.revokeObjectURL(old.url)
-    }
-
-    audioCache.set(cacheKey, result)
-    
-    // 内存保护：限制缓存大小 (LRU)
-    // Map 保持插入顺序，keys().next().value 是最早插入的
-    if (audioCache.size > 5) {
-      const oldestKey = audioCache.keys().next().value
-      const oldItem = audioCache.get(oldestKey)
-      if (oldItem && oldItem.isBlob) {
-        URL.revokeObjectURL(oldItem.url)
-        console.log(`🧹 释放旧缓存页: ${oldestKey}`)
+      
+      const result = {
+        url: audioBlobUrl,
+        metadata: metadata,
+        isBlob: audioBlobUrl.startsWith('blob:')
       }
-      audioCache.delete(oldestKey)
+      
+      // 如果旧缓存存在且是 Blob，先释放
+      if (audioCache.has(cacheKey)) {
+        const old = audioCache.get(cacheKey)
+        if (old.isBlob) URL.revokeObjectURL(old.url)
+      }
+  
+      audioCache.set(cacheKey, result)
+      
+      // 内存保护：限制缓存大小 (LRU)
+      // Map 保持插入顺序，keys().next().value 是最早插入的
+      if (audioCache.size > 2) {  // 缓存限制：2页
+        const oldestKey = audioCache.keys().next().value
+        const oldItem = audioCache.get(oldestKey)
+        if (oldItem && oldItem.isBlob) {
+          URL.revokeObjectURL(oldItem.url)
+          console.log(`🧹 释放旧缓存页: ${oldestKey}`)
+        }
+        audioCache.delete(oldestKey)
+      }
+  
+      console.log(`✅ 请求完成: 第${pageIndex}页`)
+      return result
+      
+    } catch (error) {
+      console.error(`❌ 请求失败: 第${pageIndex}页`, error)
+      throw error
+    } finally {
+      pendingRequests.delete(cacheKey)
+      currentFetchController = null
     }
-
-    return result
-    
-  } finally {
-    isFetchingGlobal = false
-    currentFetchController = null
-  }
+  })()
+  
+  pendingRequests.set(cacheKey, requestPromise)
+  return await requestPromise
 }
+
+
 
 function preloadNextPage() {
-  if (currentPage.value < totalPages.value - 1) {
-    fetchAudioPage(currentPage.value + 1).catch(e => console.log('预加载失败', e))
+  const pagesToPreload = 1 // 预加载页数
+  
+  for (let i = 1; i <= pagesToPreload; i++) {
+    const nextPageIndex = currentPage.value + i
+    if (nextPageIndex < totalPages.value) {
+      console.log(`⏬ 预加载: 第${nextPageIndex}页`)
+      fetchAudioPage(nextPageIndex).catch(e => 
+        console.log(`⚠️ 预加载失败: 第${nextPageIndex}页`, e)
+      )
+    }
   }
 }
+
 
 function clearAudioCache() {
   audioCache.forEach(item => {
