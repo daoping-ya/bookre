@@ -713,48 +713,9 @@ async function playVoice() {
   console.log('=== 开始 TTS 播放流程 (SSML) ===')
   if (!currentPageContent.value) return
   
-  // 【移动端音频解锁 - 强化版】
-  // 策略：在用户点击的同步堆栈中立即创建Audio并播放可听见的短音
-  if (!audioPlayer.value) {
-    audioPlayer.value = new Audio()
-    // iOS 兼容性设置
-    audioPlayer.value.setAttribute('playsinline', 'true')
-    audioPlayer.value.setAttribute('webkit-playsinline', 'true')
-    console.log('✅ 创建新的 Audio 对象')
-  }
-  
-  // 使用一个极短的可听见音频来解锁（比静音更可靠）
-  // 0.1秒 440Hz 正弦波（A4音符）
-  const unlockAudio = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA='
-  audioPlayer.value.src = unlockAudio
-  audioPlayer.value.volume = 0.01 // 设置极低音量（几乎听不见但不是静音）
-  
-  let unlockSuccess = false
-  try {
-    const playPromise = audioPlayer.value.play()
-    if (playPromise !== undefined) {
-      await playPromise
-      unlockSuccess = true
-      console.log('🔊 音频引擎解锁成功（可听见音）')
-    }
-  } catch (e) {
-    console.error('❌ 音频解锁失败:', e.name, e.message)
-    // 尝试备用方案：用户可能需要再次点击
-    alert('移动端首次播放需要您的授权，请再次点击播放按钮')
-    isPlaying.value = false
-    return
-  }
-  
-  // 等待100ms让音频引擎完全激活
-  if (unlockSuccess) {
-    await new Promise(resolve => setTimeout(resolve, 100))
-  }
-  
-  // 恢复正常音量
-  audioPlayer.value.volume = 1.0
-
   isPlaying.value = true
   playingPageIndex.value = currentPage.value // 记录当前播放的页码
+  
   
   try {
     // 1. 获取音频和元数据
@@ -762,8 +723,18 @@ async function playVoice() {
     
     if (!isPlaying.value) return // 可能在请求中被停止
 
-    // 复用已解锁的 audioPlayer
+    // 创建或复用 audioPlayer（移动端兼容）
+    if (!audioPlayer.value) {
+      audioPlayer.value = new Audio()
+      // iOS 必须设置这些属性才能在页面内播放
+      audioPlayer.value.setAttribute('playsinline', '')
+      audioPlayer.value.setAttribute('webkit-playsinline', '')
+      console.log('✅ 创建 Audio 对象')
+    }
+    
+    // 设置音频源
     audioPlayer.value.src = url
+    console.log('🎵 音频源:', url)
     
     // 2. 设置段落高亮 - 基于时间的粗略估算
     audioPlayer.value.onloadedmetadata = () => {

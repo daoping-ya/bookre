@@ -13,11 +13,14 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     proxy: {
-
       '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,
         secure: false
+      },
+      '/audio': {
+        target: 'http://localhost:8000',
+        changeOrigin: true
       }
     }
   },
