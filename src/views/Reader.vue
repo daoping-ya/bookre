@@ -110,7 +110,6 @@
               :key="index"
               class="reader-paragraph"
               :class="{ active: isPlaying && currentPage === playingPageIndex && currentParaIndex === index }"
-              @click="playParagraph(index)"
             >
               {{ para }}
             </p>
@@ -714,6 +713,23 @@ async function playVoice() {
   console.log('=== 开始 TTS 播放流程 (SSML) ===')
   if (!currentPageContent.value) return
   
+  // 【关键修复】移动端音频解锁
+  // 必须在用户点击事件的同步堆栈中立即创建/恢复 AudioContext 或 Audio 对象
+  if (!audioPlayer.value) {
+    audioPlayer.value = new Audio()
+  }
+  
+  // 播放一段极短的静音来解锁音频引擎
+  // 这是一个 base64 编码的 0.1秒静音 WAV 文件
+  const silentWav = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA'
+  audioPlayer.value.src = silentWav
+  try {
+    await audioPlayer.value.play()
+    console.log('🔊 音频引擎解锁成功')
+  } catch (e) {
+    console.warn('⚠️ 音频引擎解锁失败 (可能需要用户交互)', e)
+  }
+
   isPlaying.value = true
   playingPageIndex.value = currentPage.value // 记录当前播放的页码
   
@@ -723,12 +739,8 @@ async function playVoice() {
     
     if (!isPlaying.value) return // 可能在请求中被停止
 
-    if (audioPlayer.value) {
-      audioPlayer.value.pause()
-      audioPlayer.value = null
-    }
-
-    audioPlayer.value = new Audio(url)
+    // 复用已解锁的 audioPlayer
+    audioPlayer.value.src = url
     
     // 2. 设置段落高亮 - 基于时间的粗略估算
     audioPlayer.value.onloadedmetadata = () => {
@@ -786,7 +798,10 @@ async function playVoice() {
         currentPage.value++
         updateProgress() // 只更新进度，不触发播放
         playingPageIndex.value = currentPage.value // 更新播放页码
-        setTimeout(() => playVoice(), 500) // 自动开始下一页
+        
+        // 递归调用 playVoice，这在移动端可能也会被拦截，但通常连续播放是被允许的
+        // 只要第一个 play 是由用户触发的
+        setTimeout(() => playVoice(), 500) 
       } else {
         // 最后一页播放完毕
         isPlaying.value = false
