@@ -76,6 +76,7 @@ pm2 startup
    sudo nano /etc/nginx/sites-available/bookre
    # 确保 root 指向 /var/www/bookre/dist
    # 确保 server_name 是您的域名
+   # 注意：默认端口已更改为 5173
    ```
 3. 启用配置并重启 Nginx：
    ```bash
@@ -83,14 +84,15 @@ pm2 startup
    sudo nginx -t
    sudo systemctl restart nginx
    ```
+   **重要提示**：请确保您的 VPS 防火墙已开放 5173 端口 (例如 `sudo ufw allow 5173`)。
 
 ## 3. 验证部署
-访问您的域名 (例如 `http://your_domain.com`)：
+访问您的域名加端口 (例如 `http://your_domain.com:5173`)：
 - 页面应正常加载。
 - API 请求应成功 (检查网络面板)。
 - TTS 功能应可用。
 
 ## 4. 常见问题
 - **权限问题**: 确保 Nginx 有权读取 `dist` 目录。
-- **端口冲突**: 确保 3000 和 8000 端口未被占用。
+- **端口冲突**: 确保 5173 和 8000 端口未被占用。
 - **EasyVoice 内存**: 如果 VPS 内存较小 (<2GB)，EasyVoice 可能会 OOM。尝试增加 Swap。

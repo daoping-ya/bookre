@@ -141,7 +141,7 @@ watch([fontSize, lineHeight, theme], () => {
 async function loadVoices() {
   isLoadingVoices.value = true
   try {
-    const res = await fetch('http://localhost:8000/api/voice/list')
+    const res = await fetch('/api/voice/list')
     if (res.ok) {
       const data = await res.json()
       voices.value = data.voices || []

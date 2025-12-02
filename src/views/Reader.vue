@@ -100,7 +100,7 @@
         @click="toggleControls"
         @wheel="handleWheel"
       >
-        <div class="page-container" :style="pageStyle">
+        <div class="page-container" :style="pageStyle" ref="pageContainerRef">
           <div v-if="isLoading" class="loading-spinner">
             加载中...
           </div>
@@ -231,6 +231,7 @@ const showControls = ref(true)
 const showSidebar = ref(null) // 'toc', 'voice', or null
 const showSettings = ref(false)
 const contentAreaRef = ref(null) // DOM 引用：阅读内容区域
+const pageContainerRef = ref(null) // DOM 引用：实际滚动容器
 
 // --- 设置状态 ---
 const currentTheme = ref('theme-light')
@@ -491,8 +492,8 @@ function prevPage() {
     updateProgress()
     // 重置滚动条到顶部
     nextTick(() => {
-      if (contentAreaRef.value) {
-        contentAreaRef.value.scrollTop = 0
+      if (pageContainerRef.value) {
+        pageContainerRef.value.scrollTop = 0
       }
     })
   }
@@ -504,8 +505,8 @@ function nextPage() {
     updateProgress()
     // 重置滚动条到顶部
     nextTick(() => {
-      if (contentAreaRef.value) {
-        contentAreaRef.value.scrollTop = 0
+      if (pageContainerRef.value) {
+        pageContainerRef.value.scrollTop = 0
       }
     })
   }
@@ -556,7 +557,7 @@ function handleKeydown(e) {
 }
 
 function handleWheel(e) {
-  const el = contentAreaRef.value
+  const el = pageContainerRef.value
   if (!el) return
 
   // 1. 正常的页面拖动行为（由浏览器处理）
@@ -581,7 +582,7 @@ function handleWheel(e) {
       
       // 翻页后，重置滚动条到顶部，并启动冷却计时
       nextTick(() => { 
-        if (contentAreaRef.value) contentAreaRef.value.scrollTop = 0 
+        if (pageContainerRef.value) pageContainerRef.value.scrollTop = 0 
       })
       pageTurnTimer = setTimeout(() => {
         pageTurnTimer = null
@@ -599,7 +600,7 @@ function handleWheel(e) {
       
       // 翻页后，重置滚动条到底部，并启动冷却计时
       nextTick(() => { 
-        if (contentAreaRef.value) contentAreaRef.value.scrollTop = contentAreaRef.value.scrollHeight 
+        if (pageContainerRef.value) pageContainerRef.value.scrollTop = pageContainerRef.value.scrollHeight 
       })
       pageTurnTimer = setTimeout(() => {
         pageTurnTimer = null
@@ -670,7 +671,7 @@ function adjustFontSize(delta) {
 async function loadVoices() {
   isLoadingVoices.value = true
   try {
-    const res = await fetch('http://localhost:8000/api/voice/list')
+    const res = await fetch('/api/voice/list')
     if (res.ok) {
       const data = await res.json()
       availableVoices.value = data.voices || []

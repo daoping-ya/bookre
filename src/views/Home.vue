@@ -141,7 +141,7 @@ async function loadBooks() {
 
 async function checkBackendStatus() {
   try {
-    const res = await fetch('http://localhost:8000/health')
+    const res = await fetch('/api/health')
     isBackendOnline.value = res.ok
   } catch (e) {
     isBackendOnline.value = false

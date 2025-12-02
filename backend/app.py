@@ -276,7 +276,7 @@ async def synthesize_voice(request: Request):
         logger.error(f"语音合成失败: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/health")
+@app.get("/api/health")
 async def health_check():
     """健康检查"""
     return {"status": "healthy", "service": "bookre-api"}
