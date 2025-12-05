@@ -99,6 +99,9 @@
         ref="contentAreaRef"
         @click="toggleControls"
         @wheel="handleWheel"
+        @touchstart="handleTouchStart"
+        @touchmove="handleTouchMove"
+        @touchend="handleTouchEnd"
       >
         <div class="page-container" :style="pageStyle" ref="pageContainerRef">
           <div v-if="isLoading" class="loading-spinner">
@@ -185,26 +188,53 @@
               <label>行高: {{ lineHeight }}</label>
               <input type="range" v-model.number="lineHeight" min="1.0" max="2.5" step="0.1" class="form-range">
             </div>
+
+            <div class="setting-item device-sync-section">
+              <label>设备身份 (ID)</label>
+              <div class="sync-input-group">
+                <input type="text" v-model="inputDeviceId" class="form-input" placeholder="设置自定义ID">
+                <button @click="handleSetDeviceId" class="btn-primary btn-small" :disabled="!inputDeviceId || inputDeviceId === currentDeviceId">保存/同步</button>
+              </div>
+              <p class="backup-tip" style="margin-top: 8px; font-size: 12px; opacity: 0.7;">
+                提示：您可以将 ID 修改为容易记忆的名称（如 "my-iphone"）。在不同设备上输入相同的 ID 即可同步进度。
+              </p>
+            </div>
           </div>
         </div>
       </transition>
     </div>
 
     <!-- 底部进度栏 -->
+    <!-- 底部进度栏 (双层结构) -->
     <footer class="bottom-bar" :class="{ 'hidden': !showControls }">
-      <button @click="prevPage" class="btn-page" :disabled="currentPage <= 0">上一页</button>
-      
-      <div class="progress-info">
-        <span class="page-num">{{ currentPage + 1 }} / {{ totalPages }}</span>
+      <!-- 上层：进度控制 -->
+      <div class="bottom-bar-row progress-row">
+        <button @click="prevChapter" class="btn-text">上一章</button>
         <div class="slider-container" @click="handleProgressClick">
           <div class="slider-track">
             <div class="slider-fill" :style="{ width: progressPercentage + '%' }"></div>
           </div>
         </div>
-        <span class="percentage">{{ Math.round(progressPercentage) }}%</span>
+        <button @click="nextChapter" class="btn-text">下一章</button>
       </div>
-
-      <button @click="nextPage" class="btn-page" :disabled="currentPage >= totalPages - 1">下一页</button>
+      
+      <!-- 下层：功能菜单 -->
+      <div class="bottom-bar-row menu-row">
+        <button @click="toggleTOC" class="btn-menu-item" :class="{ active: showSidebar === 'toc' }">
+          <span class="icon">📑</span>
+          <span class="label">目录</span>
+        </button>
+        
+        <button @click="toggleNightMode" class="btn-menu-item">
+          <span class="icon">{{ currentTheme === 'theme-dark' ? '☀️' : '🌙' }}</span>
+          <span class="label">{{ currentTheme === 'theme-dark' ? '日间' : '夜间' }}</span>
+        </button>
+        
+        <button @click="toggleSettings" class="btn-menu-item" :class="{ active: showSettings }">
+          <span class="icon">⚙️</span>
+          <span class="label">设置</span>
+        </button>
+      </div>
     </footer>
   </div>
 </template>
@@ -213,6 +243,7 @@
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useBooksStore } from '@/store/books'
+import { getDeviceId, setDeviceId } from '@/utils/device'
 
 // --- 核心状态 ---
 const route = useRoute()
@@ -238,6 +269,8 @@ const fontSize = ref(18)
 const lineHeight = ref(1.6)
 const fontFamily = ref('sans-serif')
 const isBold = ref(false)
+const currentDeviceId = ref('')
+const inputDeviceId = ref('')
 
 // --- 语音状态 ---
 const isPlaying = ref(false)
@@ -304,6 +337,8 @@ onMounted(async () => {
   loadSettings()
   window.addEventListener('keydown', handleKeydown)
   loadVoices()
+  currentDeviceId.value = getDeviceId()
+  inputDeviceId.value = currentDeviceId.value // 初始化输入框
 })
 
 onUnmounted(() => {
@@ -508,7 +543,31 @@ function nextPage() {
         pageContainerRef.value.scrollTop = 0
       }
     })
+  } else {
+    // 尝试跳转下一章
+    nextChapter()
   }
+}
+
+function prevChapter() {
+  if (currentChapter.value > 0) {
+    jumpToChapter(currentChapter.value - 1)
+  }
+}
+
+function nextChapter() {
+  if (currentChapter.value < chapters.value.length - 1) {
+    jumpToChapter(currentChapter.value + 1)
+  }
+}
+
+function toggleNightMode() {
+  if (currentTheme.value === 'theme-dark') {
+    setTheme('theme-sepia') // 默认切回护眼模式
+  } else {
+    setTheme('theme-dark')
+  }
+  saveSettings()
 }
 
 function jumpToChapter(index) {
@@ -613,6 +672,40 @@ function handleWheel(e) {
   }
 }
 
+// --- 触摸滑动翻页 ---
+const touchStart = { x: 0, y: 0 }
+const minSwipeDistance = 50
+
+function handleTouchStart(e) {
+  touchStart.x = e.touches[0].clientX
+  touchStart.y = e.touches[0].clientY
+}
+
+function handleTouchMove(e) {
+  // 可以在这里添加跟随手指的动画效果
+}
+
+function handleTouchEnd(e) {
+  const touchEnd = {
+    x: e.changedTouches[0].clientX,
+    y: e.changedTouches[0].clientY
+  }
+  
+  const deltaX = touchEnd.x - touchStart.x
+  const deltaY = touchEnd.y - touchStart.y
+  
+  // 水平滑动判定 (X轴位移大于Y轴，且超过阈值)
+  if (Math.abs(deltaX) > Math.abs(deltaY) && Math.abs(deltaX) > minSwipeDistance) {
+    if (deltaX > 0) {
+      // 向右滑 -> 上一页
+      prevPage()
+    } else {
+      // 向左滑 -> 下一页
+      nextPage()
+    }
+  }
+}
+
 // 目录自动定位
 const tocListRef = ref(null)
 function scrollToActiveChapter() {
@@ -663,6 +756,20 @@ function adjustFontSize(delta) {
   const newVal = fontSize.value + delta
   if (newVal >= 12 && newVal <= 36) {
     fontSize.value = newVal
+  }
+}
+
+// --- 设备同步 ---
+function handleSetDeviceId() {
+  const newId = inputDeviceId.value.trim()
+  if (!newId) return
+  
+  if (newId === currentDeviceId.value) return
+
+  if (confirm(`确定要将设备 ID 修改为: "${newId}" 吗？\n\n修改后，系统将加载该 ID 下的阅读进度。如果您在其他设备上也使用此 ID，进度将自动同步。`)) {
+    setDeviceId(newId)
+    // 强制刷新以重新加载数据
+    window.location.reload()
   }
 }
 
@@ -1256,6 +1363,36 @@ function clearAudioCache() {
   box-shadow: 2px 0 8px rgba(0,0,0,0.1);
 }
 
+/* 移动端目录优化 (Bottom Sheet) */
+@media (max-width: 768px) {
+  .sidebar {
+    width: 100%;
+    height: 70vh; /* 占据屏幕 70% 高度 */
+    top: auto;
+    bottom: 0;
+    border-right: none;
+    border-top: 1px solid var(--border-color);
+    box-shadow: 0 -4px 12px rgba(0,0,0,0.15);
+    border-radius: 16px 16px 0 0;
+    transform: translateY(100%);
+    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  
+  /* 当 v-if 为 true 时，Vue 的 transition 会处理进入动画，
+     但我们需要确保它在显示时位置正确 */
+  .sidebar {
+    transform: translateY(0);
+  }
+  
+  /* 配合 Vue transition 的样式覆盖 */
+  .slide-left-enter-from, .slide-left-leave-to {
+    transform: translateY(100%) !important;
+  }
+  .slide-left-enter-active, .slide-left-leave-active {
+    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+}
+
 .sidebar-panel {
   height: 100%;
   display: flex;
@@ -1455,8 +1592,14 @@ function clearAudioCache() {
 }
 
 .theme-light { background: #fff; color: #333; }
-.theme-sepia { background: #f4ecd8; color: #5c4b37; }
-.theme-dark { background: #2d3748; color: #fff; }
+.theme-sepia { 
+  background: #f6f1e6; /* 更接近羊皮纸的暖色 */
+  color: #5c4b37; 
+  --bg-panel: #f6f1e6;
+  --border-color: #e0d6c5;
+  --accent-color: #8d6e63;
+}
+.theme-dark { background: #1a1a1a; color: #a8a8a8; --bg-panel: #2c2c2c; --border-color: #333; }
 
 .option-btn {
   flex: 1;
@@ -1490,33 +1633,78 @@ function clearAudioCache() {
   color: inherit;
 }
 
-/* 底部栏 */
+/* 底部栏重构 */
 .bottom-bar {
-  height: 50px;
+  height: auto;
+  min-height: 100px;
   background-color: var(--bg-panel);
   border-top: 1px solid var(--border-color);
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 16px;
+  flex-direction: column;
+  padding: 10px 16px;
   position: absolute;
   bottom: 0;
   left: 0;
   right: 0;
   z-index: 100;
   transition: transform 0.3s ease;
+  box-shadow: 0 -2px 10px rgba(0,0,0,0.05);
 }
 
 .bottom-bar.hidden {
   transform: translateY(100%);
 }
 
-.progress-info {
-  flex: 1;
+.bottom-bar-row {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin: 0 20px;
+  justify-content: space-between;
+  width: 100%;
+  padding: 8px 0;
+}
+
+.progress-row {
+  gap: 16px;
+  border-bottom: 1px solid rgba(0,0,0,0.05);
+}
+
+.menu-row {
+  justify-content: space-around;
+  padding-top: 12px;
+}
+
+.btn-text {
+  background: none;
+  border: none;
+  font-size: 14px;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.8;
+}
+
+.btn-menu-item {
+  background: none;
+  border: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  color: inherit;
+  opacity: 0.7;
+}
+
+.btn-menu-item.active {
+  opacity: 1;
+  color: var(--accent-color);
+}
+
+.btn-menu-item .icon {
+  font-size: 20px;
+}
+
+.btn-menu-item .label {
+  font-size: 10px;
 }
 
 .slider-container {
@@ -1533,25 +1721,27 @@ function clearAudioCache() {
   background-color: rgba(0,0,0,0.1);
   border-radius: 2px;
   overflow: hidden;
+  position: relative;
 }
 
 .slider-fill {
   height: 100%;
   background-color: var(--accent-color);
+  position: relative;
 }
 
-.btn-page {
-  padding: 6px 12px;
-  border: 1px solid var(--border-color);
-  background: transparent;
-  border-radius: 4px;
-  cursor: pointer;
-  color: inherit;
-}
-
-.btn-page:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+/* 增加滑块圆点，提升拖拽感 */
+.slider-fill::after {
+  content: '';
+  position: absolute;
+  right: -6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 12px;
+  height: 12px;
+  background-color: var(--accent-color);
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
 }
 
 /* 动画 */
@@ -1595,5 +1785,55 @@ function clearAudioCache() {
 
 .theme-dark .reader-paragraph:hover {
   background-color: rgba(255, 255, 255, 0.05);
+}
+
+/* 设备同步样式 */
+.device-sync-section {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px dashed var(--border-color);
+}
+
+.device-id-display {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  font-size: 12px;
+}
+
+.id-code {
+  background-color: rgba(0,0,0,0.05);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: monospace;
+  cursor: pointer;
+  user-select: all;
+  border: 1px solid transparent;
+}
+
+.id-code:hover {
+  border-color: var(--accent-color);
+  background-color: rgba(0,0,0,0.1);
+}
+
+.sync-input-group {
+  display: flex;
+  gap: 8px;
+}
+
+.form-input {
+  flex: 1;
+  padding: 6px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  font-size: 12px;
+  background: transparent;
+  color: inherit;
+}
+
+.btn-small {
+  padding: 6px 12px;
+  font-size: 12px;
 }
 </style>

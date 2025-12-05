@@ -1,98 +1,250 @@
-# BookRe 部署指南 (VPS)
+# BookRe 部署指南
 
-本指南将指导您将 BookRe 部署到 Linux VPS (推荐 Ubuntu 20.04/22.04)。
+## 一、本地提交到 GitHub
 
-## 1. 准备工作
-
-### 1.1 服务器环境
-确保您的 VPS 安装了以下软件：
-- **Node.js** (v18+): 用于运行 EasyVoice 和构建前端。
-- **Python** (v3.9+): 用于运行后端 API。
-- **PNPM**: 包管理器。
-- **PM2**: 进程守护。
-- **Nginx**: 反向代理。
-- **Git**: 拉取代码。
-
-### 1.2 安装命令示例 (Ubuntu)
+### 1. 检查修改状态
 ```bash
-# 更新系统
-sudo apt update && sudo apt upgrade -y
-
-# 安装 Python 和 pip
-sudo apt install python3 python3-pip python3-venv -y
-
-# 安装 Node.js (使用 nvm 或直接安装)
-curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
-sudo apt install -y nodejs
-
-# 安装全局工具
-sudo npm install -g pnpm pm2
+cd f:\bookre
+git status
 ```
 
-## 2. 部署步骤
-
-### 2.1 获取代码
+### 2. 添加所有更改
 ```bash
-cd /var/www
-git clone https://github.com/您的用户名/bookre.git
-cd bookre
+git add .
 ```
 
-### 2.2 安装依赖
+### 3. 提交更改
 ```bash
-# 1. 安装所有依赖 (前端 + EasyVoice)
-pnpm install
+git commit -m "feat: 自动封面匹配、自定义设备ID、移动端UI重构
 
-# 2. 安装 Python 后端依赖
+- 实现三层封面防护系统（本地提取/网络自动匹配/手动上传）
+- 添加Google Books和OpenLibrary API集成
+- 支持自定义设备ID进行跨设备同步
+- 重构移动端UI（仿阅读App双层底部栏）
+- 优化护眼模式配色（羊皮纸质感）
+- 实现触摸滑动翻页和底部目录弹窗
+- 优化封面存储为独立文件，提升加载性能"
+```
+
+### 4. 推送到 GitHub
+```bash
+git push origin main
+```
+
+如果是首次推送或设置远程仓库：
+```bash
+# 设置远程仓库（仅首次）
+git remote add origin https://github.com/你的用户名/bookre.git
+
+# 推送
+git push -u origin main
+```
+
+---
+
+## 二、VPS 部署流程
+
+### 1. SSH 连接到 VPS
+```bash
+ssh your_user@your_vps_ip
+```
+
+### 2. 拉取最新代码
+```bash
+cd ~/bookre  # 或你的项目路径
+git pull origin main
+```
+
+### 3. 更新后端依赖（如有新增）
+```bash
 cd backend
-python3 -m venv venv
-source venv/bin/activate
+source venv/bin/activate  # 激活虚拟环境（如果使用）
 pip install -r requirements.txt
-deactivate
+```
+
+### 4. 构建前端
+```bash
+cd ..  # 回到项目根目录
+npm install  # 如果有新的依赖
+npm run build
+```
+
+### 5. 重启服务
+
+#### 方式 A：使用 systemd（推荐）
+```bash
+# 重启后端服务
+sudo systemctl restart bookre-backend
+
+# 重启前端服务（Nginx无需重启，只需刷新静态文件）
+sudo systemctl reload nginx
+```
+
+#### 方式 B：使用 PM2
+```bash
+# 重启后端
+pm2 restart bookre-backend
+
+# Nginx 重新加载配置
+sudo nginx -s reload
+```
+
+#### 方式 C：手动重启
+```bash
+# 停止旧进程
+pkill -f "python.*app.py"
+
+# 启动后端（后台运行）
+cd backend
+nohup python app.py > logs/backend.log 2>&1 &
+```
+
+### 6. 验证部署
+```bash
+# 检查后端服务状态
+curl http://localhost:8000/api/health
+
+# 检查进程
+ps aux | grep python
+ps aux | grep nginx
+```
+
+---
+
+## 三、快捷部署脚本
+
+### 本地：一键提交推送
+创建 `deploy-local.sh`：
+```bash
+#!/bin/bash
+echo "📦 开始提交代码..."
+git add .
+git commit -m "$1"
+git push origin main
+echo "✅ 代码已推送到 GitHub"
+```
+
+使用方式：
+```bash
+bash deploy-local.sh "feat: 添加新功能"
+```
+
+### VPS：一键部署
+创建 `deploy-vps.sh`：
+```bash
+#!/bin/bash
+set -e
+
+echo "🚀 开始部署 BookRe..."
+
+# 拉取代码
+echo "📥 拉取最新代码..."
+git pull origin main
+
+# 更新依赖
+echo "📦 更新后端依赖..."
+cd backend
+pip install -r requirements.txt -q
+
+# 构建前端
+echo "🔨 构建前端..."
 cd ..
+npm install --silent
+npm run build
+
+# 重启服务
+echo "♻️ 重启服务..."
+sudo systemctl restart bookre-backend
+sudo systemctl reload nginx
+
+# 验证
+echo "✅ 验证部署..."
+sleep 2
+curl -s http://localhost:8000/api/health
+
+echo "🎉 部署完成！"
 ```
 
-### 2.3 构建前端
+使用方式：
 ```bash
-pnpm build
+bash deploy-vps.sh
 ```
-构建完成后，静态文件将位于 `dist` 目录。
 
-### 2.4 启动服务 (PM2)
-我们已经准备好了 `ecosystem.config.js`，直接启动即可：
+---
+
+## 四、常见问题排查
+
+### 后端启动失败
 ```bash
-pm2 start ecosystem.config.js
-pm2 save
-pm2 startup
+# 查看日志
+sudo journalctl -u bookre-backend -f
+
+# 或查看错误日志
+tail -f backend/logs/backend.log
 ```
 
-### 2.5 配置 Nginx
-1. 复制配置模板：
-   ```bash
-   sudo cp deploy/nginx.conf /etc/nginx/sites-available/bookre
-   ```
-2. 编辑配置 (修改域名和路径)：
-   ```bash
-   sudo nano /etc/nginx/sites-available/bookre
-   # 确保 root 指向 /var/www/bookre/dist
-   # 确保 server_name 是您的域名
-   # 注意：默认端口已更改为 5173
-   ```
-3. 启用配置并重启 Nginx：
-   ```bash
-   sudo ln -s /etc/nginx/sites-available/bookre /etc/nginx/sites-enabled/
-   sudo nginx -t
-   sudo systemctl restart nginx
-   ```
-   **重要提示**：请确保您的 VPS 防火墙已开放 5173 端口 (例如 `sudo ufw allow 5173`)。
+### 前端404错误
+```bash
+# 检查 Nginx 配置
+sudo nginx -t
 
-## 3. 验证部署
-访问您的域名加端口 (例如 `http://your_domain.com:5173`)：
-- 页面应正常加载。
-- API 请求应成功 (检查网络面板)。
-- TTS 功能应可用。
+# 查看 Nginx 错误日志
+sudo tail -f /var/log/nginx/error.log
+```
 
-## 4. 常见问题
-- **权限问题**: 确保 Nginx 有权读取 `dist` 目录。
-- **端口冲突**: 确保 5173 和 8000 端口未被占用。
-- **EasyVoice 内存**: 如果 VPS 内存较小 (<2GB)，EasyVoice 可能会 OOM。尝试增加 Swap。
+### 端口被占用
+```bash
+# 查找占用8000端口的进程
+sudo lsof -i :8000
+
+# 杀死进程
+sudo kill -9 <PID>
+```
+
+---
+
+## 五、回滚操作
+
+如果新版本有问题，快速回滚：
+```bash
+# 回退到上一个提交
+git reset --hard HEAD~1
+git push -f origin main
+
+# VPS上拉取回退版本
+cd ~/bookre
+git pull origin main --force
+
+# 重新构建部署
+npm run build
+sudo systemctl restart bookre-backend
+```
+
+---
+
+## 附录：systemd 服务配置示例
+
+如果尚未配置 systemd，创建 `/etc/systemd/system/bookre-backend.service`：
+```ini
+[Unit]
+Description=BookRe Backend API
+After=network.target
+
+[Service]
+Type=simple
+User=your_user
+WorkingDirectory=/home/your_user/bookre/backend
+ExecStart=/usr/bin/python3 app.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+启用服务：
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable bookre-backend
+sudo systemctl start bookre-backend
+```

@@ -34,6 +34,10 @@ app.add_middleware(
 
 # 挂载音频静态文件目录
 app.mount("/audio", StaticFiles(directory="data/audio"), name="audio")
+# 挂载封面静态文件目录
+COVERS_DIR = Path("data/covers")
+COVERS_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/covers", StaticFiles(directory="data/covers"), name="covers")
 
 # 初始化数据库
 @app.on_event("startup")
@@ -166,11 +170,37 @@ async def save_book(request: Request):
             raise HTTPException(status_code=400, detail="Missing book ID")
         
         file_path = BOOKS_DATA_DIR / f"{book_id}.json"
+        
+        # 处理封面图片 (Base64 -> File)
+        cover_data = data.get("cover")
+        if cover_data and cover_data.startswith("data:image"):
+            try:
+                import base64
+                # 提取 base64 数据
+                header, encoded = cover_data.split(",", 1)
+                file_ext = "jpg"
+                if "png" in header:
+                    file_ext = "png"
+                
+                # 保存为文件
+                cover_filename = f"{book_id}.{file_ext}"
+                cover_path = COVERS_DIR / cover_filename
+                
+                with open(cover_path, "wb") as f:
+                    f.write(base64.b64decode(encoded))
+                
+                # 更新数据中的 cover 字段为 URL
+                data["cover"] = f"/covers/{cover_filename}"
+                logger.info(f"封面已转存: {cover_filename}")
+            except Exception as e:
+                logger.error(f"封面转存失败: {e}")
+                # 失败时保留原 Base64，避免数据丢失
+
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
             
         logger.info(f"书籍已保存: {book_id}")
-        return {"status": "success", "message": "Book saved"}
+        return {"status": "success", "message": "Book saved", "cover": data.get("cover")}
     except Exception as e:
         logger.error(f"保存书籍失败: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -252,6 +282,92 @@ async def update_book_metadata(book_id: str, request: Request):
         return {"status": "success", "message": "Metadata updated"}
     except Exception as e:
         logger.error(f"更新书籍失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/books/{book_id}/cover")
+async def upload_cover(book_id: str, file: UploadFile = File(...)):
+    """手动上传封面"""
+    try:
+        # 验证文件类型
+        if not file.content_type.startswith("image/"):
+            raise HTTPException(status_code=400, detail="只允许上传图片文件")
+            
+        file_ext = file.filename.split(".")[-1].lower()
+        if file_ext not in ["jpg", "jpeg", "png", "webp"]:
+            file_ext = "jpg" # 默认
+            
+        cover_filename = f"{book_id}.{file_ext}"
+        cover_path = COVERS_DIR / cover_filename
+        
+        # 保存文件
+        with open(cover_path, "wb") as f:
+            content = await file.read()
+            f.write(content)
+            
+        # 更新书籍 JSON
+        import json
+        json_path = BOOKS_DATA_DIR / f"{book_id}.json"
+        if json_path.exists():
+            with open(json_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            
+            data["cover"] = f"/covers/{cover_filename}"
+            
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        
+        return {"status": "success", "url": f"/covers/{cover_filename}"}
+        
+    except Exception as e:
+        logger.error(f"上传封面失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/books/{book_id}/cover/auto")
+async def auto_match_cover(book_id: str):
+    """自动匹配网络封面"""
+    try:
+        import json
+        from services.cover_search import search_cover_online, download_image
+        
+        # 读取书籍信息
+        file_path = BOOKS_DATA_DIR / f"{book_id}.json"
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="Book not found")
+            
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            
+        title = data.get("title", "")
+        author = data.get("author", "")
+        
+        # 搜索封面 URL
+        cover_url = await search_cover_online(title, author)
+        if not cover_url:
+            raise HTTPException(status_code=404, detail="未找到匹配的封面")
+            
+        # 下载图片
+        image_data = await download_image(cover_url)
+        if not image_data:
+            raise HTTPException(status_code=500, detail="封面下载失败")
+            
+        # 保存文件
+        cover_filename = f"{book_id}.jpg"
+        cover_path = COVERS_DIR / cover_filename
+        
+        with open(cover_path, "wb") as f:
+            f.write(image_data)
+            
+        # 更新 JSON
+        data["cover"] = f"/covers/{cover_filename}"
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            
+        return {"status": "success", "url": data["cover"], "source": cover_url}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"自动匹配封面失败: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # TTS相关端点

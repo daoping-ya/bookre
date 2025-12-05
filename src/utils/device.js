@@ -23,6 +23,16 @@ export function getDeviceId() {
 }
 
 /**
+ * 手动设置设备ID (用于同步/恢复)
+ * @param {string} id - 新的设备ID
+ */
+export function setDeviceId(id) {
+    if (!id) return
+    localStorage.setItem('device_id', id)
+    console.log('🔄 设备ID已手动更新:', id)
+}
+
+/**
  * 获取设备名称
  * @returns {string} 设备名称
  */

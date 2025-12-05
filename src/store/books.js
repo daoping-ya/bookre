@@ -107,6 +107,11 @@ export const useBooksStore = defineStore('books', {
                 // 🧼 清除缓存，确保数据一致
                 sessionStorage.removeItem('books_list')
 
+                // 🪄 如果没有封面，自动尝试从网络匹配（静默执行，不阻塞）
+                if (!newBook.cover) {
+                    this.autoFetchCover(newBook.id, newBook.title, newBook.author)
+                }
+
                 return newBook
             } catch (error) {
                 console.error('导入书籍失败:', error)
@@ -114,6 +119,30 @@ export const useBooksStore = defineStore('books', {
                 throw error
             } finally {
                 this.isLoading = false
+            }
+        },
+
+        // 自动匹配网络封面（后台静默执行）
+        async autoFetchCover(bookId, title, author) {
+            try {
+                console.log(`🪄 正在为《${title}》自动搜索封面...`)
+
+                const res = await axios.post(`${API_BASE}/books/${bookId}/cover/auto`)
+
+                if (res.data && res.data.url) {
+                    // 更新本地Store中的封面
+                    const book = this.books.find(b => b.id === bookId)
+                    if (book) {
+                        book.cover = `${res.data.url}?t=${Date.now()}`
+                        console.log(`✅ 封面匹配成功: ${book.title}`)
+                    }
+
+                    // 清除缓存，确保下次加载时获取最新数据
+                    sessionStorage.removeItem('books_list')
+                }
+            } catch (e) {
+                // 静默失败，不影响用户体验
+                console.warn(`⚠️ 封面自动匹配失败（${title}）:`, e.response?.data?.detail || e.message)
             }
         },
 

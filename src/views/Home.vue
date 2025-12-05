@@ -31,6 +31,14 @@
           @change="handleFileSelect"
           multiple
         >
+        <!-- 封面上传输入 -->
+        <input 
+          type="file" 
+          ref="coverInput" 
+          style="display: none" 
+          accept="image/*"
+          @change="handleCoverUpload"
+        >
       </header>
 
       <!-- 内容区域 -->
@@ -64,6 +72,7 @@
               </div>
               
               <!-- 删除按钮 -->
+              <!-- 删除按钮 -->
               <button 
                 class="delete-btn" 
                 @click.stop="showDeleteConfirm(book)"
@@ -71,6 +80,24 @@
               >
                 🗑️
               </button>
+              
+              <!-- 修改封面按钮 -->
+              <div class="cover-actions">
+                <button 
+                  class="action-btn edit-btn" 
+                  @click.stop="triggerCoverUpload(book)"
+                  title="上传封面"
+                >
+                  🖼️
+                </button>
+                <button 
+                  class="action-btn auto-btn" 
+                  @click.stop="triggerAutoCover(book)"
+                  title="自动匹配网络封面"
+                >
+                  🪄
+                </button>
+              </div>
             </div>
             
             <div class="book-info">
@@ -127,6 +154,8 @@ const router = useRouter()
 const booksStore = useBooksStore()
 const books = ref([])
 const fileInput = ref(null)
+const coverInput = ref(null)
+const currentEditingBook = ref(null)
 const isBackendOnline = ref(false)
 
 onMounted(async () => {
@@ -237,6 +266,91 @@ async function confirmDelete() {
     await booksStore.deleteBook(deleteDialog.value.book.id)
     await loadBooks()
     cancelDelete()
+  }
+}
+
+// 封面上传
+function triggerCoverUpload(book) {
+  currentEditingBook.value = book
+  coverInput.value.click()
+}
+
+async function handleCoverUpload(e) {
+  const file = e.target.files[0]
+  if (!file || !currentEditingBook.value) return
+  
+  // 乐观更新 UI
+  const book = currentEditingBook.value
+  const reader = new FileReader()
+  reader.onload = (e) => {
+    book.cover = e.target.result // 临时显示本地预览
+  }
+  reader.readAsDataURL(file)
+  
+  try {
+    const formData = new FormData()
+    formData.append('file', file)
+    
+    const res = await fetch(`/api/books/${book.id}/cover`, {
+      method: 'POST',
+      body: formData
+    })
+    
+    if (res.ok) {
+      const data = await res.json()
+      // 更新为服务器 URL (带时间戳防缓存)
+      book.cover = `${data.url}?t=${Date.now()}`
+      // 更新 Store 中的数据
+      const storeBook = booksStore.books.find(b => b.id === book.id)
+      if (storeBook) {
+        storeBook.cover = book.cover
+      }
+    } else {
+      throw new Error('上传失败')
+    }
+  } catch (err) {
+    console.error(err)
+    alert('封面上传失败')
+    // 恢复原状 (重新加载)
+    await loadBooks()
+  } finally {
+    e.target.value = ''
+    currentEditingBook.value = null
+  }
+}
+
+// 自动匹配封面
+async function triggerAutoCover(book) {
+  if (!confirm(`确定要为《${book.title}》自动匹配封面吗？\n这将从网络搜索并替换当前封面。`)) return
+
+  try {
+    // 显示加载状态 (可选: 可以加个 loading 标记)
+    const originalCover = book.cover
+    book.cover = '' // 闪烁一下表示正在处理
+    
+    const res = await fetch(`/api/books/${book.id}/cover/auto`, {
+      method: 'POST'
+    })
+    
+    if (res.ok) {
+      const data = await res.json()
+      book.cover = `${data.url}?t=${Date.now()}`
+      
+      // 更新 Store
+      const storeBook = booksStore.books.find(b => b.id === book.id)
+      if (storeBook) {
+        storeBook.cover = book.cover
+      }
+      alert('封面匹配成功！')
+    } else {
+      const err = await res.json()
+      throw new Error(err.detail || '匹配失败')
+    }
+  } catch (e) {
+    console.error(e)
+    alert(`自动匹配失败: ${e.message}`)
+    // 恢复
+    await loadBooks()
   }
 }
 </script>
@@ -545,6 +659,53 @@ async function confirmDelete() {
 .delete-btn:hover {
   background: #ef4444;
   transform: scale(1.1);
+  transform: scale(1.1);
+}
+
+/* 封面操作按钮组 */
+.cover-actions {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transform: scale(0.8);
+  transition: all 0.2s;
+  z-index: 10;
+}
+
+.book-item:hover .cover-actions {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.action-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: none;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(10px);
+  color: white;
+  font-size: 16px;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.action-btn:hover {
+  transform: scale(1.1);
+}
+
+.edit-btn:hover {
+  background: #3b82f6;
+}
+
+.auto-btn:hover {
+  background: #8b5cf6; /* 紫色代表魔法 */
 }
 
 /* 模态对话框 */
