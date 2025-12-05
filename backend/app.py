@@ -32,11 +32,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 确保所有必需的目录存在（部署友好）
+REQUIRED_DIRS = [
+    Path("data/audio"),
+    Path("data/covers"),
+    Path("data/books"),
+    Path("temp"),
+    Path("logs")
+]
+
+for directory in REQUIRED_DIRS:
+    directory.mkdir(parents=True, exist_ok=True)
+    logger.info(f"✅ 目录已就绪: {directory}")
+
 # 挂载音频静态文件目录
 app.mount("/audio", StaticFiles(directory="data/audio"), name="audio")
 # 挂载封面静态文件目录
 COVERS_DIR = Path("data/covers")
-COVERS_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/covers", StaticFiles(directory="data/covers"), name="covers")
 
 # 初始化数据库
