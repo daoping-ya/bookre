@@ -41,8 +41,8 @@ echo ""
 # 4. 构建前端
 echo -e "${YELLOW}[4/7]${NC} 构建前端..."
 cd /var/www/bookre
-npm install --silent
-npm run build
+pnpm install
+pnpm run build
 echo -e "${GREEN}✓${NC} 前端构建完成"
 echo ""
 
