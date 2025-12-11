@@ -204,6 +204,17 @@
       </transition>
     </div>
 
+    <!-- 听书悬浮按钮 (移动端优化) -->
+    <button 
+      v-if="!showSidebar && !showSettings" 
+      class="fab-tts"
+      :class="{ playing: isPlaying }" 
+      @click="togglePlay"
+      title="朗读"
+    >
+      <span class="icon">{{ isPlaying ? '⏸' : '🎧' }}</span>
+    </button>
+
     <!-- 底部进度栏 -->
     <!-- 底部进度栏 (双层结构) -->
     <footer class="bottom-bar" :class="{ 'hidden': !showControls }">
@@ -282,7 +293,7 @@ const voiceSpeed = ref(1.0)
 const audioPlayer = ref(null)
 const audioCache = new Map() // Map<pageIndex, BlobURL>
 const pendingRequests = new Map() // Map<cacheKey, Promise> 跟踪正在进行的请求
-const preloadCount = 2 // 预加载页数（降低以减轻 EasyVoice 负载）
+const preloadCount = 3 // 预加载页数（增加以避免卡顿）
 const currentParaIndex = ref(0) // 当前播放的段落索引
 const playingPageIndex = ref(-1) // 正在播放的音频对应的页码
 let currentFetchController = null // 当前请求的控制器
@@ -1361,6 +1372,44 @@ function clearAudioCache() {
   top: 0;
   z-index: 90;
   box-shadow: 2px 0 8px rgba(0,0,0,0.1);
+  display: flex;
+  flex-direction: column;
+}
+
+/* 听书悬浮按钮 */
+.fab-tts {
+  position: absolute;
+  bottom: 80px; /* 位于底部栏上方 */
+  right: 24px;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background-color: var(--accent-color);
+  color: white;
+  border: none;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  cursor: pointer;
+  z-index: 80;
+  transition: transform 0.2s, background-color 0.3s;
+}
+
+.fab-tts:active {
+  transform: scale(0.95);
+}
+
+.fab-tts.playing {
+  background-color: #48bb78;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0% { box-shadow: 0 0 0 0 rgba(72, 187, 120, 0.7); }
+  70% { box-shadow: 0 0 0 10px rgba(72, 187, 120, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(72, 187, 120, 0); }
 }
 
 /* 移动端目录优化 (Bottom Sheet) */
@@ -1376,6 +1425,7 @@ function clearAudioCache() {
     border-radius: 16px 16px 0 0;
     transform: translateY(100%);
     transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    z-index: 200; /* 确保在底部栏之上 */
   }
   
   /* 当 v-if 为 true 时，Vue 的 transition 会处理进入动画，

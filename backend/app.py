@@ -56,7 +56,23 @@ app.mount("/covers", StaticFiles(directory="data/covers"), name="covers")
 async def startup_event():
     logger.info("🚀 启动BookRe后端服务...")
     init_db()
-    logger.info("✅ 数据库初始化完成")
+    
+    # 启动后台清理任务 (每10分钟清理一次，保留最近30分钟的音频)
+    import asyncio
+    async def cleanup_loop():
+        while True:
+            try:
+                await asyncio.sleep(600) # 等待10分钟
+                logger.info("🧹 执行定时期音频清理...")
+                engine = get_tts_engine()
+                # 清理超过 0.5 小时 (30分钟) 的文件
+                engine.cleanup_old_audio_files(max_age_hours=0.5)
+            except Exception as e:
+                logger.error(f"清理任务异常: {e}")
+                await asyncio.sleep(60) # 出错后短暂停顿
+
+    asyncio.create_task(cleanup_loop())
+    logger.info("✅ 数据库初始化完成 & 清理任务已启动")
 
 @app.get("/")
 async def root():
@@ -218,8 +234,8 @@ async def save_book(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/books/{book_id}")
-async def load_book(book_id: str):
-    """加载书籍数据"""
+async def load_book(book_id: str, deviceId: str = None):
+    """加载书籍数据 (支持多设备进度同步)"""
     try:
         import json
         file_path = BOOKS_DATA_DIR / f"{book_id}.json"
@@ -227,11 +243,19 @@ async def load_book(book_id: str):
             raise HTTPException(status_code=404, detail="Book not found")
             
         with open(file_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+            book_data = json.load(f)
             
-        return data
-    except HTTPException:
-        raise
+        # 如果提供了 deviceId，读取该设备的进度覆盖默认进度
+        if deviceId and "devices" in book_data and deviceId in book_data["devices"]:
+            device_progress = book_data["devices"][deviceId]
+            # 仅覆盖进度相关字段，保留书籍元数据
+            book_data["progress"] = device_progress.get("progress", 0)
+            book_data["currentPage"] = device_progress.get("currentPage", 0)
+            book_data["currentChapter"] = device_progress.get("currentChapter", 0)
+            book_data["lastReadAt"] = device_progress.get("lastReadAt")
+            logger.info(f"已加载设备进度: {deviceId} -> {book_data['currentPage']}页")
+            
+        return book_data
     except Exception as e:
         logger.error(f"加载书籍失败: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))

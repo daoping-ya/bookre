@@ -12,7 +12,6 @@ cd /d "%~dp0"
 set PATH=%PATH%;%~dp0node_modules\.bin
 
 echo [1/3] 启动 EasyVoice (后台)...
-echo [1/3] 启动 EasyVoice (后台)...
 start "EasyVoice Service" cmd /k "cd /d %~dp0packages\easyvoice && pnpm start"
 timeout /t 10 /nobreak >nul
 
