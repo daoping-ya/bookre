@@ -52,8 +52,9 @@ fi
 
 # 3. 前端构建
 echo -e "${YELLOW}[3/4] 构建前端资源...${NC}"
-npm install --silent
-npm run build
+cd "$PROJECT_ROOT"
+pnpm install
+pnpm run build
 echo -e "${GREEN}✓ 前端构建完成${NC}"
 
 # 4. Nginx (可选)
