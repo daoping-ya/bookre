@@ -8,12 +8,18 @@ echo.
 
 cd /d "%~dp0"
 
-:: 将 node_modules/.bin 添加到 PATH，确保 pnpm 和 vite 可用
+:: 将 node_modules/.bin 添加到 PATH
 set PATH=%PATH%;%~dp0node_modules\.bin
+
+:: 清理旧进程，避免端口冲突
+echo [0/3] 清理旧进程...
+taskkill /F /IM node.exe >nul 2>&1
+taskkill /F /IM python.exe >nul 2>&1
+timeout /t 2 /nobreak >nul
 
 echo [1/3] 启动 EasyVoice (后台)...
 start "EasyVoice Service" cmd /k "cd /d %~dp0packages\easyvoice && pnpm start"
-timeout /t 10 /nobreak >nul
+timeout /t 8 /nobreak >nul
 
 echo [2/3] 启动后端服务 (后台)...
 start "BookRe Backend" cmd /k "cd backend && call venv\Scripts\activate && python app.py"

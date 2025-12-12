@@ -190,13 +190,29 @@
             </div>
 
             <div class="setting-item device-sync-section">
-              <label>设备身份 (ID)</label>
+              <label>
+                云端同步 ID
+                <span class="sync-status" :class="syncStatus">
+                  {{ syncStatusText }}
+                </span>
+              </label>
               <div class="sync-input-group">
-                <input type="text" v-model="inputDeviceId" class="form-input" placeholder="设置自定义ID">
-                <button @click="handleSetDeviceId" class="btn-primary btn-small" :disabled="!inputDeviceId || inputDeviceId === currentDeviceId">保存/同步</button>
+                <input 
+                  type="text" 
+                  v-model="inputDeviceId" 
+                  class="form-input" 
+                  placeholder="输入同步ID（如：my-phone）"
+                >
+                <button 
+                  @click="handleSetDeviceId" 
+                  class="btn-primary btn-small" 
+                  :disabled="!inputDeviceId || inputDeviceId === currentDeviceId"
+                >
+                  保存并同步
+                </button>
               </div>
-              <p class="backup-tip" style="margin-top: 8px; font-size: 12px; opacity: 0.7;">
-                提示：您可以将 ID 修改为容易记忆的名称（如 "my-iphone"）。在不同设备上输入相同的 ID 即可同步进度。
+              <p class="sync-tip">
+                💡 在不同设备输入相同的ID，阅读进度将自动同步到云端。
               </p>
             </div>
           </div>
@@ -247,6 +263,9 @@
         </button>
       </div>
     </footer>
+    
+    <!-- Toast 通知 -->
+    <Toast :visible="toastVisible" :message="toastMessage" :type="toastType" />
   </div>
 </template>
 
@@ -255,6 +274,7 @@ import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useBooksStore } from '@/store/books'
 import { getDeviceId, setDeviceId } from '@/utils/device'
+import Toast from '@/components/Toast.vue'
 
 // --- 核心状态 ---
 const route = useRoute()
@@ -282,6 +302,19 @@ const fontFamily = ref('sans-serif')
 const isBold = ref(false)
 const currentDeviceId = ref('')
 const inputDeviceId = ref('')
+
+// --- 同步状态 ---
+const syncStatus = ref('unknown') // 'synced' | 'local' | 'syncing' | 'unknown'
+const toastMessage = ref('')
+const toastType = ref('info')
+const toastVisible = ref(false)
+
+const syncStatusText = computed(() => ({
+  synced: '🟢 已连接',
+  local: '🟡 仅本地',
+  syncing: '🔄 同步中...',
+  unknown: '⚪ 检测中'
+}[syncStatus.value] || ''))
 
 // --- 语音状态 ---
 const isPlaying = ref(false)
@@ -350,7 +383,30 @@ onMounted(async () => {
   loadVoices()
   currentDeviceId.value = getDeviceId()
   inputDeviceId.value = currentDeviceId.value // 初始化输入框
+  
+  // 检查云端连接状态
+  checkSyncStatus()
 })
+
+// 检查云端连接
+async function checkSyncStatus() {
+  try {
+    const res = await fetch('/api/health', { timeout: 3000 })
+    syncStatus.value = res.ok ? 'synced' : 'local'
+  } catch {
+    syncStatus.value = 'local'
+  }
+}
+
+// 显示Toast提示
+function showToast(message, type = 'info', duration = 2500) {
+  toastMessage.value = message
+  toastType.value = type
+  toastVisible.value = true
+  setTimeout(() => {
+    toastVisible.value = false
+  }, duration)
+}
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown)
@@ -601,15 +657,31 @@ function handleProgressClick(e) {
   updateProgress()
 }
 
-function updateProgress() {
+// 防抖计时器
+let progressDebounceTimer = null
+
+async function updateProgress(showFeedback = false) {
   // 更新当前章节
   if (window._pageToChapter && window._pageToChapter[currentPage.value] !== undefined) {
     currentChapter.value = window._pageToChapter[currentPage.value]
   }
   
-  // 保存到 Store
+  // 保存到 Store (防抖处理，避免频繁请求)
   if (currentBook.value) {
-    booksStore.updateProgress(bookId, currentPage.value, currentChapter.value)
+    if (progressDebounceTimer) clearTimeout(progressDebounceTimer)
+    
+    progressDebounceTimer = setTimeout(async () => {
+      const result = await booksStore.updateProgress(bookId, currentPage.value, currentChapter.value)
+      
+      // 更新同步状态
+      if (result.location === 'cloud') {
+        syncStatus.value = 'synced'
+        if (showFeedback) showToast('已同步至云端', 'success')
+      } else if (result.location === 'local') {
+        syncStatus.value = 'local'
+        if (showFeedback) showToast('已保存到本地', 'warning')
+      }
+    }, 500)  // 500ms 防抖
   }
   
   // 不再包含任何播放逻辑 - 滚轮翻页不应影响语音播放
@@ -1885,5 +1957,110 @@ function clearAudioCache() {
 .btn-small {
   padding: 6px 12px;
   font-size: 12px;
+}
+
+/* 同步状态指示 */
+.sync-status {
+  display: inline-block;
+  font-size: 12px;
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--bg-secondary);
+}
+
+.sync-status.synced { color: #22c55e; }
+.sync-status.local { color: #f59e0b; }
+.sync-status.syncing { color: #3b82f6; }
+.sync-status.unknown { color: #94a3b8; }
+
+.sync-tip {
+  margin-top: 8px;
+  font-size: 12px;
+  opacity: 0.7;
+  line-height: 1.5;
+}
+
+/* ===== 移动端适配 ===== */
+@media (max-width: 768px) {
+  /* 侧边栏全屏覆盖 */
+  .sidebar {
+    position: fixed !important;
+    top: 0;
+    left: 0;
+    width: 85% !important;
+    max-width: 320px;
+    height: 100%;
+    z-index: 1000;
+    background: var(--bg-color);
+    box-shadow: 4px 0 20px rgba(0,0,0,0.3);
+  }
+  
+  /* 增大所有按钮点击热区 */
+  .btn-icon, .btn-menu-item {
+    min-width: 48px;
+    min-height: 48px;
+    padding: 12px;
+  }
+  
+  /* 底部菜单按钮增大 */
+  .bottom-bar .btn-text,
+  .bottom-bar .btn-menu-item {
+    padding: 14px 20px;
+    font-size: 15px;
+  }
+  
+  /* 顶部栏精简 */
+  .top-bar .book-info {
+    max-width: 50vw;
+  }
+  
+  .book-title {
+    font-size: 14px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  
+  .chapter-title {
+    display: none;
+  }
+  
+  /* 悬浮TTS按钮增大 */
+  .fab-tts {
+    width: 60px;
+    height: 60px;
+    font-size: 26px;
+    bottom: 100px;
+    right: 16px;
+  }
+  
+  /* 设置面板优化 */
+  .settings-modal .settings-card {
+    width: 95%;
+    max-width: 400px;
+    max-height: 85vh;
+    overflow-y: auto;
+  }
+  
+  /* 目录列表增大行高 */
+  .toc-item {
+    padding: 14px 16px;
+    min-height: 48px;
+  }
+  
+  /* 语音面板按钮 */
+  .playback-actions .btn-primary,
+  .playback-actions .btn-secondary {
+    padding: 14px 24px;
+    font-size: 16px;
+  }
+}
+
+/* 平板适配 */
+@media (min-width: 769px) and (max-width: 1024px) {
+  .sidebar {
+    width: 300px;
+  }
 }
 </style>

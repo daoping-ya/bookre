@@ -276,26 +276,29 @@ async def delete_book(book_id: str):
 
 @app.patch("/api/books/{book_id}")
 async def update_book_metadata(book_id: str, request: Request):
-    """更新书籍元数据 (支持多设备)"""
+    """更新书籍元数据 (支持多设备同步)"""
+    import traceback
+    
     try:
         import json
         updates = await request.json()
+        device_id = updates.pop('deviceId', None)
+        
+        logger.info(f"📝 进度更新请求: book={book_id}, device={device_id}, data={updates}")
+        
         file_path = BOOKS_DATA_DIR / f"{book_id}.json"
         if not file_path.exists():
+            logger.warning(f"⚠️ 书籍不存在: {book_id}")
             raise HTTPException(status_code=404, detail="Book not found")
             
         with open(file_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        
-        # 提取 deviceId
-        device_id = updates.pop('deviceId', None)
         
         if device_id:
             # 多设备模式：更新特定设备的进度
             if 'devices' not in data:
                 data['devices'] = {}
             
-            # 更新设备进度
             if device_id not in data['devices']:
                 data['devices'][device_id] = {}
             
@@ -305,7 +308,7 @@ async def update_book_metadata(book_id: str, request: Request):
                 if field in updates:
                     data['devices'][device_id][field] = updates[field]
             
-            logger.info(f"更新设备 {device_id} 的进度: {book_id}")
+            logger.info(f"✅ 设备 {device_id} 进度已更新: page={updates.get('currentPage')}")
         else:
             # 兼容旧版：直接更新根字段
             if 'chapters' in updates:
@@ -314,10 +317,24 @@ async def update_book_metadata(book_id: str, request: Request):
         
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-            
-        return {"status": "success", "message": "Metadata updated"}
+        
+        logger.info(f"✅ 进度保存成功: {book_id}")
+        return {
+            "status": "success", 
+            "message": "Metadata updated",
+            "savedTo": "cloud"  # 明确返回保存位置
+        }
+        
+    except HTTPException:
+        raise
+    except json.JSONDecodeError as e:
+        logger.error(f"❌ JSON解析失败: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"无效的JSON数据: {str(e)}")
+    except PermissionError as e:
+        logger.error(f"❌ 文件权限错误: {str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail="服务器文件权限错误，请联系管理员")
     except Exception as e:
-        logger.error(f"更新书籍失败: {str(e)}")
+        logger.error(f"❌ 更新书籍失败: {str(e)}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/books/{book_id}/cover")

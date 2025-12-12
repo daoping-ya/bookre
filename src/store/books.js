@@ -176,28 +176,45 @@ export const useBooksStore = defineStore('books', {
             }
         },
 
-        // 更新进度 (使用 PATCH)
+        // 更新进度 (使用 PATCH) - 增加状态返回和超时处理
         async updateProgress(bookId, page, chapter = 0) {
             const book = this.books.find(b => b.id === bookId)
-            if (book) {
-                book.progress = (page / book.totalPages) * 100
-                book.currentPage = page
-                book.currentChapter = chapter
-                book.lastReadAt = new Date().toISOString()
+            if (!book) return { success: false, location: 'none' }
 
-                const deviceId = getDeviceId()
+            // 乐观更新本地状态
+            book.progress = (page / (book.totalPages || 1)) * 100
+            book.currentPage = page
+            book.currentChapter = chapter
+            book.lastReadAt = new Date().toISOString()
 
-                // 发送部分更新到后端
-                try {
-                    await axios.patch(`${API_BASE}/books/${bookId}`, {
-                        deviceId: deviceId,
-                        progress: book.progress,
-                        currentPage: book.currentPage,
-                        currentChapter: book.currentChapter,
-                        lastReadAt: book.lastReadAt
-                    })
-                } catch (e) {
-                    console.error('保存进度失败:', e)
+            const deviceId = getDeviceId()
+
+            // 尝试云端同步
+            try {
+                const response = await axios.patch(`${API_BASE}/books/${bookId}`, {
+                    deviceId: deviceId,
+                    progress: book.progress,
+                    currentPage: book.currentPage,
+                    currentChapter: book.currentChapter,
+                    lastReadAt: book.lastReadAt
+                }, {
+                    timeout: 5000  // 5秒超时，防止移动端卡顿
+                })
+
+                console.log('✅ 进度已同步到云端')
+                return {
+                    success: true,
+                    location: 'cloud',
+                    savedTo: response.data?.savedTo || 'cloud'
+                }
+
+            } catch (e) {
+                // 云端失败时仅本地保存，不影响用户体验
+                console.warn('⚠️ 云端同步失败，已保存到本地:', e.message)
+                return {
+                    success: true,  // 本地已更新，算成功
+                    location: 'local',
+                    error: e.message
                 }
             }
         },
