@@ -1,14 +1,17 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional
 import uvicorn
 from pathlib import Path
 import logging
+import json
+import time
 
 from services.epub_parser import EpubParser
+from services.epub_lazy_parser import EpubLazyParser
 from services.txt_parser import TxtParser
 from services.tts_engine import get_tts_engine
 from database import init_db
@@ -134,6 +137,168 @@ class TTSRequest(BaseModel):
 # 书籍存储相关端点
 BOOKS_DATA_DIR = Path("data/books")
 BOOKS_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+# 原始文件存储目录 (用于懒解析)
+UPLOADS_DIR = Path("data/uploads")
+UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
+# ============ 懒解析上传接口 (秒开体验) ============
+
+def save_book_json(book_id: str, data: dict):
+    """保存书籍JSON"""
+    file_path = BOOKS_DATA_DIR / f"{book_id}.json"
+    with open(file_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def load_book_json(book_id: str) -> dict:
+    """加载书籍JSON"""
+    file_path = BOOKS_DATA_DIR / f"{book_id}.json"
+    if not file_path.exists():
+        return None
+    with open(file_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+async def process_chapters_background(book_id: str):
+    """后台任务：逐章解析内容"""
+    try:
+        book_data = load_book_json(book_id)
+        if not book_data:
+            return
+        
+        file_path = book_data.get('originalFilePath')
+        if not file_path or not Path(file_path).exists():
+            return
+        
+        logger.info(f"📖 后台解析开始: {book_data.get('title')}")
+        parser = EpubLazyParser(file_path)
+        
+        for i, chapter in enumerate(book_data.get('chapters', [])):
+            if chapter.get('content') is None:
+                parsed = parser.parse_single_chapter(i)
+                if parsed:
+                    book_data['chapters'][i] = parsed
+                    # 每解析5章保存一次
+                    if i % 5 == 0:
+                        save_book_json(book_id, book_data)
+        
+        book_data['parsing_status'] = 'completed'
+        save_book_json(book_id, book_data)
+        logger.info(f"✅ 后台解析完成: {book_data.get('title')}")
+        
+    except Exception as e:
+        logger.error(f"❌ 后台解析失败: {e}")
+
+@app.post("/api/books/upload")
+async def upload_book_lazy(
+    file: UploadFile = File(...),
+    background_tasks: BackgroundTasks = None
+):
+    """
+    上传书籍 - 懒解析模式
+    秒级返回，后台解析章节内容
+    """
+    book_id = str(int(time.time() * 1000))
+    file_ext = file.filename.split('.')[-1].lower()
+    
+    if file_ext not in ['epub', 'txt']:
+        raise HTTPException(400, f"不支持的格式: {file_ext}")
+    
+    try:
+        # 1. 保存原始文件
+        original_path = UPLOADS_DIR / f"{book_id}.{file_ext}"
+        content = await file.read()
+        with open(original_path, "wb") as f:
+            f.write(content)
+        
+        logger.info(f"📤 文件已保存: {original_path} ({len(content)/1024:.1f}KB)")
+        
+        # 2. 快速解析元数据
+        if file_ext == 'epub':
+            parser = EpubLazyParser(str(original_path))
+            metadata = parser.parse_metadata_only()
+        else:
+            # TXT 直接读取
+            from services.txt_parser import TxtParser
+            txt_parser = TxtParser()
+            metadata = txt_parser.parse(content)
+        
+        # 3. 构建书籍数据
+        book_data = {
+            'id': book_id,
+            'title': metadata.get('title', file.filename),
+            'author': metadata.get('author', '未知作者'),
+            'cover': metadata.get('cover'),
+            'format': file_ext,
+            'chapters': metadata.get('chapters', []),
+            'totalPages': metadata.get('total_chapters', 0),
+            'progress': 0,
+            'currentPage': 0,
+            'currentChapter': 0,
+            'createdAt': __import__('datetime').datetime.now().isoformat(),
+            'lastReadAt': __import__('datetime').datetime.now().isoformat(),
+            'originalFilePath': str(original_path),
+            'parsing_status': 'pending' if file_ext == 'epub' else 'completed'
+        }
+        
+        # 4. 保存初始数据
+        save_book_json(book_id, book_data)
+        logger.info(f"✅ 书籍已创建: {book_data['title']} (ID: {book_id})")
+        
+        # 5. 后台解析章节内容 (仅EPUB)
+        if file_ext == 'epub' and background_tasks:
+            background_tasks.add_task(process_chapters_background, book_id)
+            logger.info(f"🔄 已启动后台解析任务")
+        
+        return {
+            "book_id": book_id,
+            "title": book_data['title'],
+            "author": book_data['author'],
+            "cover": book_data['cover'],
+            "total_chapters": book_data['totalPages']
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ 上传失败: {e}")
+        raise HTTPException(500, f"上传失败: {str(e)}")
+
+@app.get("/api/books/{book_id}/chapter/{index}")
+async def get_chapter_content(book_id: str, index: int):
+    """
+    获取章节内容 - 按需解析
+    如果后台还没解析到，实时解析该章节
+    """
+    book_data = load_book_json(book_id)
+    if not book_data:
+        raise HTTPException(404, "书籍不存在")
+    
+    chapters = book_data.get('chapters', [])
+    if index < 0 or index >= len(chapters):
+        raise HTTPException(404, "章节不存在")
+    
+    chapter = chapters[index]
+    
+    # 如果内容为空，实时解析
+    if chapter.get('content') is None:
+        file_path = book_data.get('originalFilePath')
+        if file_path and Path(file_path).exists():
+            parser = EpubLazyParser(file_path)
+            parsed = parser.parse_single_chapter(index)
+            
+            if parsed:
+                # 更新缓存
+                book_data['chapters'][index] = parsed
+                save_book_json(book_id, book_data)
+                return parsed
+        
+        # 解析失败返回空章节
+        return {
+            'index': index,
+            'title': chapter.get('title', f'第 {index + 1} 章'),
+            'content': '章节内容加载失败',
+            'word_count': 0
+        }
+    
+    return chapter
 
 @app.get("/api/books")
 async def list_books(deviceId: Optional[str] = None):

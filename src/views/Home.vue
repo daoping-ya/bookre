@@ -142,6 +142,23 @@
         </div>
       </div>
     </transition>
+
+    <!-- 上传进度弹窗 -->
+    <transition name="modal">
+      <div v-if="uploadState.show" class="modal-overlay upload-overlay">
+        <div class="upload-modal-card">
+          <div class="upload-icon">📚</div>
+          <p class="upload-text">{{ uploadState.text }}</p>
+          <div v-if="uploadState.progress >= 0" class="upload-progress-bar">
+            <div class="upload-progress-fill" :style="{ width: uploadState.progress + '%' }"></div>
+          </div>
+          <p class="upload-percent" v-if="uploadState.progress >= 0 && uploadState.progress < 100">
+            {{ uploadState.progress }}%
+          </p>
+          <div v-if="uploadState.progress >= 100" class="upload-spinner"></div>
+        </div>
+      </div>
+    </transition>
   </div>
 </template>
 
@@ -158,6 +175,12 @@ const coverInput = ref(null)
 const currentEditingBook = ref(null)
 const isBackendOnline = ref(false)
 
+// 上传进度状态
+const uploadState = ref({
+  show: false,
+  progress: 0,
+  text: '上传中...'
+})
 onMounted(async () => {
   checkBackendStatus()
   await booksStore.loadBooks()
@@ -205,14 +228,32 @@ async function handleFileSelect(e) {
   const files = e.target.files
   if (!files.length) return
   
+  const file = files[0]
+  e.target.value = '' // 清空input以便重复选择同一文件
+  
+  // 显示进度弹窗
+  uploadState.value = {
+    show: true,
+    progress: 0,
+    text: '上传中...'
+  }
+  
   try {
-    for (const file of files) {
-      await booksStore.importBook(file)
-    }
-    await loadBooks()
-    e.target.value = ''
+    // 使用新的懒解析上传
+    const result = await booksStore.uploadBook(file, (progress) => {
+      uploadState.value.progress = progress
+      if (progress >= 100) {
+        uploadState.value.text = '正在获取目录...'
+      }
+    })
+    
+    // 上传成功，立即跳转阅读页
+    uploadState.value.show = false
+    router.push({ name: 'reader', params: { bookId: result.book_id } })
+    
   } catch (err) {
-    alert('导入失败: ' + err.message)
+    uploadState.value.show = false
+    alert('导入失败: ' + (err.response?.data?.detail || err.message))
   }
 }
 
@@ -838,5 +879,74 @@ async function triggerAutoCover(book) {
 .modal-enter-from .modal-card,
 .modal-leave-to .modal-card {
   transform: scale(0.9);
+}
+
+/* 上传进度弹窗 */
+.upload-overlay {
+  background: rgba(0, 0, 0, 0.7);
+}
+
+.upload-modal-card {
+  background: white;
+  border-radius: 20px;
+  padding: 40px 50px;
+  text-align: center;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+  min-width: 280px;
+}
+
+.upload-icon {
+  font-size: 64px;
+  margin-bottom: 16px;
+  animation: bounce 1s ease infinite;
+}
+
+@keyframes bounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+.upload-text {
+  font-size: 18px;
+  font-weight: 600;
+  color: #1e293b;
+  margin: 0 0 20px 0;
+}
+
+.upload-progress-bar {
+  width: 100%;
+  height: 8px;
+  background: #e2e8f0;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+
+.upload-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #6366f1, #8b5cf6);
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+.upload-percent {
+  font-size: 24px;
+  font-weight: 700;
+  color: #6366f1;
+  margin: 0;
+}
+
+.upload-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid #e2e8f0;
+  border-top-color: #6366f1;
+  border-radius: 50%;
+  margin: 0 auto;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 </style>

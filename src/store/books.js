@@ -48,6 +48,39 @@ export const useBooksStore = defineStore('books', {
             }
         },
 
+        /**
+         * 快速上传书籍 (懒解析模式)
+         * @param {File} file - 上传的文件
+         * @param {Function} onProgress - 进度回调 (0-100)
+         * @returns {Object} - { book_id, title, author, cover, total_chapters }
+         */
+        async uploadBook(file, onProgress = null) {
+            const formData = new FormData()
+            formData.append('file', file)
+
+            try {
+                const response = await axios.post(`${API_BASE}/books/upload`, formData, {
+                    headers: { 'Content-Type': 'multipart/form-data' },
+                    onUploadProgress: (progressEvent) => {
+                        if (onProgress && progressEvent.total) {
+                            const percent = Math.round((progressEvent.loaded / progressEvent.total) * 100)
+                            onProgress(percent)
+                        }
+                    }
+                })
+
+                // 清除缓存，确保刷新
+                sessionStorage.removeItem('books_list')
+
+                console.log('✅ 上传成功:', response.data)
+                return response.data
+
+            } catch (error) {
+                console.error('上传失败:', error)
+                throw error
+            }
+        },
+
         // 导入并保存书籍
         async importBook(fileOrPath) {
             this.isLoading = true
@@ -173,6 +206,20 @@ export const useBooksStore = defineStore('books', {
                 throw error
             } finally {
                 this.isLoading = false
+            }
+        },
+
+        /**
+         * 获取单章节内容 (按需加载)
+         * 用于懒解析模式下获取章节内容
+         */
+        async fetchChapter(bookId, chapterIndex) {
+            try {
+                const res = await axios.get(`${API_BASE}/books/${bookId}/chapter/${chapterIndex}`)
+                return res.data
+            } catch (error) {
+                console.error(`加载章节 ${chapterIndex} 失败:`, error)
+                return null
             }
         },
 

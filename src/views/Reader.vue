@@ -374,7 +374,7 @@ const currentParagraphs = computed(() => {
 onMounted(async () => {
   // 确保数据已加载 (防止刷新页面丢失)
   if (booksStore.books.length === 0) {
-    booksStore.loadFromLocalStorage()
+    await booksStore.loadBooks()
   }
   
   await loadBookData()
@@ -452,14 +452,40 @@ async function loadBookData() {
   }
 }
 
-// 分页算法 - 恢复字符估算 (支持滚动条)
+// 分页算法 - 恢复字符估算 (支持滚动条) + 懒加载支持
 async function paginate() {
   // 恢复到简单的基于字符数的分页
   const charsPerPage = calculateCharsPerPage()
   const newPages = []
   const chapterMap = [] 
 
-  chapters.value.forEach((chapter, cIndex) => {
+  // 快速加载模式：只加载前5章用于首屏显示，其他章节按需加载
+  const initialLoadCount = Math.min(5, chapters.value.length)
+  
+  // 遍历所有章节
+  for (let cIndex = 0; cIndex < chapters.value.length; cIndex++) {
+    let chapter = chapters.value[cIndex]
+    
+    // 懒加载：如果章节内容为空
+    if (chapter.content === null || chapter.content === undefined) {
+      // 只主动加载前5章，其他章节使用占位符
+      if (cIndex < initialLoadCount) {
+        console.log(`📖 按需加载章节 ${cIndex}: ${chapter.title}`)
+        const fetchedChapter = await booksStore.fetchChapter(bookId, cIndex)
+        if (fetchedChapter && fetchedChapter.content) {
+          chapter = fetchedChapter
+          chapters.value[cIndex] = fetchedChapter // 更新本地缓存
+        } else {
+          // 加载失败，使用占位内容
+          chapter = { ...chapter, content: '章节内容加载失败，请刷新重试。' }
+        }
+      } else {
+        // 后续章节使用占位符，翻页时再加载
+        const placeholder = `\n\n正在加载 ${chapter.title || '第'+(cIndex+1)+'章'}...\n\n请稍候，章节内容将自动加载。`
+        chapter = { ...chapter, content: placeholder }
+      }
+    }
+    
     const content = chapter.content || ''
     const paras = content.split('\n')
     let currentChunk = ''
@@ -487,7 +513,7 @@ async function paginate() {
       newPages.push(currentChunk)
       chapterMap.push(cIndex)
     }
-  })
+  }
 
   if (newPages.length === 0) {
     newPages.push('暂无内容')
