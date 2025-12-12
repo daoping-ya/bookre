@@ -289,7 +289,13 @@ import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useBooksStore } from '@/store/books'
 import { getDeviceId, setDeviceId } from '@/utils/device'
+import { IS_MOBILE, IS_PRODUCTION, MOBILE_CONFIG } from '@/utils/mobile'
 import Toast from '@/components/Toast.vue'
+
+// 📱 移动端日志优化：生产环境禁用
+const log = IS_PRODUCTION ? () => {} : console.log
+const warn = IS_PRODUCTION ? () => {} : console.warn
+const error = IS_PRODUCTION ? console.error : console.error
 
 // --- 核心状态 ---
 const route = useRoute()
@@ -336,7 +342,7 @@ const syncStatusText = computed(() => ({
 // --- 懒加载 & 预加载状态 ---
 const loadingChapters = ref(new Set())  // 正在加载的章节索引
 const loadedChapters = ref(new Set())   // 已加载的章节索引
-const PRELOAD_COUNT = 3  // 预加载后续章节数量
+const PRELOAD_COUNT = MOBILE_CONFIG.PRELOAD_COUNT  // 📱 移动端预加载数量减少
 
 
 // --- 语音状态 ---
@@ -349,7 +355,7 @@ const voiceSpeed = ref(1.0)
 const audioPlayer = ref(null)
 const audioCache = new Map() // Map<pageIndex, BlobURL>
 const pendingRequests = new Map() // Map<cacheKey, Promise> 跟踪正在进行的请求
-const preloadCount = 3 // 预加载页数（增加以避免卡顿）
+const preloadCount = MOBILE_CONFIG.MAX_AUDIO_CACHE // 📱 移动端音频缓存减少
 const currentParaIndex = ref(0) // 当前播放的段落索引
 const playingPageIndex = ref(-1) // 正在播放的音频对应的页码
 let currentFetchController = null // 当前请求的控制器
@@ -1858,6 +1864,11 @@ function clearAudioCache() {
   box-shadow: 2px 0 8px rgba(0,0,0,0.1);
   display: flex;
   flex-direction: column;
+  
+  /* 📱 移动端修复：强制不透明，禁用高性能CSS */
+  opacity: 1 !important;
+  -webkit-transform: translateZ(0);  /* 强制GPU加速但避免透明bug */
+  will-change: transform;  /* 移动端性能优化 */
 }
 
 /* 听书悬浮按钮 */

@@ -1,8 +1,31 @@
 import { defineStore } from 'pinia'
 import axios from 'axios'
 import { getDeviceId } from '@/utils/device'
+import { IS_MOBILE, IS_PRODUCTION, MOBILE_CONFIG } from '@/utils/mobile'
 
 const API_BASE = '/api'
+
+// 📱 智能缓存管理（防止手机端内存溢出）
+function safeSetSessionStorage(key, data) {
+    try {
+        const jsonStr = JSON.stringify(data)
+        const sizeInBytes = new Blob([jsonStr]).size
+
+        // 超过限制则不缓存（手机端1MB，PC端5MB）
+        if (sizeInBytes > MOBILE_CONFIG.MAX_CACHE_SIZE) {
+            console.warn(`⚠️ 缓存过大 (${(sizeInBytes / 1024).toFixed(0)}KB)，跳过存储以保护内存`)
+            sessionStorage.removeItem(key)  // 删除旧缓存
+            return false
+        }
+
+        sessionStorage.setItem(key, jsonStr)
+        return true
+    } catch (e) {
+        console.error('缓存写入失败:', e)
+        sessionStorage.clear()  // 清空所有缓存避免死循环
+        return false
+    }
+}
 
 export const useBooksStore = defineStore('books', {
     state: () => ({
@@ -40,7 +63,7 @@ export const useBooksStore = defineStore('books', {
 
                     if (uniqueBooks.length !== cachedBooks.length) {
                         console.warn(`🧹 自动清理了 ${cachedBooks.length - uniqueBooks.length} 本重复书籍`)
-                        sessionStorage.setItem('books_list', JSON.stringify(uniqueBooks))
+                        safeSetSessionStorage('books_list', uniqueBooks)
                     }
 
                     this.books = uniqueBooks
@@ -58,8 +81,8 @@ export const useBooksStore = defineStore('books', {
                 const res = await axios.get(`${API_BASE}/books?deviceId=${deviceId}`)
                 this.books = res.data
 
-                // 💾 保存到缓存
-                sessionStorage.setItem('books_list', JSON.stringify(this.books))
+                // 💾 保存到缓存（移动端优化：限制大小）
+                safeSetSessionStorage('books_list', this.books)
                 console.log('💾 书籍列表已缓存')
             } catch (error) {
                 console.error('加载书籍列表失败:', error)
@@ -233,9 +256,9 @@ export const useBooksStore = defineStore('books', {
                     this.books.push(remoteBook)
                 }
 
-                // 立即更新缓存，确保最新状态被持久化
+                // 立即更新缓存，确保最新状态被持久化（移动端优化）
                 try {
-                    sessionStorage.setItem('books_list', JSON.stringify(this.books))
+                    safeSetSessionStorage('books_list', this.books)
                 } catch (e) {/* ignore */ }
 
                 return this.books[index !== -1 ? index : this.books.length - 1]
@@ -309,9 +332,9 @@ export const useBooksStore = defineStore('books', {
 
                 console.log(`☁️ 云端同步响应:`, response.data)
 
-                // 💾 同步更新 sessionStorage 缓存，防止刷新后回退
+                // 💾 同步更新 sessionStorage 缓存，防止刷新后回退（移动端优化）
                 try {
-                    sessionStorage.setItem('books_list', JSON.stringify(this.books))
+                    safeSetSessionStorage('books_list', this.books)
                     console.log('💾 阅读进度已更新到本地缓存')
                 } catch (e) {
                     console.warn('缓存更新失败', e)
