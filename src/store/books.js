@@ -25,7 +25,25 @@ export const useBooksStore = defineStore('books', {
 
             if (cached) {
                 try {
-                    this.books = JSON.parse(cached)
+                    let cachedBooks = JSON.parse(cached)
+
+                    // 🛡️ 自愈逻辑：去重
+                    // 如果缓存中存在 ID 重复的书籍，只保留一本
+                    const uniqueBooks = []
+                    const seenIds = new Set()
+                    for (const book of cachedBooks) {
+                        if (!seenIds.has(book.id)) {
+                            seenIds.add(book.id)
+                            uniqueBooks.push(book)
+                        }
+                    }
+
+                    if (uniqueBooks.length !== cachedBooks.length) {
+                        console.warn(`🧹 自动清理了 ${cachedBooks.length - uniqueBooks.length} 本重复书籍`)
+                        sessionStorage.setItem('books_list', JSON.stringify(uniqueBooks))
+                    }
+
+                    this.books = uniqueBooks
                     console.log('📦 使用缓存的书籍列表，瞬间加载！')
                     return
                 } catch (e) {
@@ -181,26 +199,46 @@ export const useBooksStore = defineStore('books', {
 
         // 加载书籍完整内容 (章节)
         async fetchBookContent(bookId) {
-            // 先检查本地是否已有章节数据
-            const existingBook = this.books.find(b => b.id === bookId)
-            if (existingBook && existingBook.chapters && existingBook.chapters.length > 0) {
-                return existingBook
-            }
-
             this.isLoading = true
             try {
+                // ⚠️ 强制从后端获取最新状态 (包括进度)，不再信任本地缓存的老旧进度
+                // const existingBook = this.books.find(b => b.id === bookId)
+                // if (existingBook && existingBook.chapters && existingBook.chapters.length > 0) {
+                //    return existingBook
+                // }
+
                 const res = await axios.get(`${API_BASE}/books/${bookId}`)
-                const fullBook = res.data
+                const remoteBook = res.data
 
                 // 更新本地 Store
-                const index = this.books.findIndex(b => b.id === bookId)
+                // ⚠️ 使用弱类型比较 (==)，因为 URL 参数可能是 string，store 中可能是 number
+                const index = this.books.findIndex(b => b.id == bookId)
                 if (index !== -1) {
-                    // 合并数据，保留本地可能的较新状态
-                    this.books[index] = { ...this.books[index], ...fullBook }
+                    const localBook = this.books[index]
+
+                    // 🧠 智能合并：保留本地已加载的章节内容 (content)，更新其他元数据
+                    if (localBook.chapters && remoteBook.chapters) {
+                        remoteBook.chapters = remoteBook.chapters.map((remoteChap, idx) => {
+                            const localChap = localBook.chapters[idx]
+                            // 如果本地有内容且 title/id 一致，保留内容
+                            if (localChap && localChap.content && !localChap.content.includes('正在加载')) {
+                                return { ...remoteChap, content: localChap.content }
+                            }
+                            return remoteChap
+                        })
+                    }
+
+                    this.books[index] = { ...localBook, ...remoteBook }
                 } else {
-                    this.books.push(fullBook)
+                    this.books.push(remoteBook)
                 }
-                return fullBook
+
+                // 立即更新缓存，确保最新状态被持久化
+                try {
+                    sessionStorage.setItem('books_list', JSON.stringify(this.books))
+                } catch (e) {/* ignore */ }
+
+                return this.books[index !== -1 ? index : this.books.length - 1]
             } catch (error) {
                 console.error('加载书籍内容失败:', error)
                 throw error
@@ -223,30 +261,61 @@ export const useBooksStore = defineStore('books', {
             }
         },
 
-        // 更新进度 (使用 PATCH) - 增加状态返回和超时处理
-        async updateProgress(bookId, page, chapter = 0) {
-            const book = this.books.find(b => b.id === bookId)
-            if (!book) return { success: false, location: 'none' }
+        // 🔧 更新进度（彻底重构，修复类型匹配问题）
+        async updateProgress(bookId, page, chapter = 0, relativePage = 0, scrollPercentage = 0) {
+            console.log(`📝 updateProgress 被调用: bookId=${bookId}(${typeof bookId}), page=${page}, chapter=${chapter}, relativePage=${relativePage}`)
+            console.log(`📚 当前books列表:`, this.books.map(b => ({ id: b.id, idType: typeof b.id, title: b.title })))
+
+            // ⚠️ 使用弱类型比较（==）而不是严格相等（===），避免 string vs number 问题
+            const book = this.books.find(b => b.id == bookId)
+            if (!book) {
+                console.error(`❌ 找不到书籍 ID=${bookId}，updateProgress 失败！`)
+                return { success: false, location: 'none' }
+            }
+
+            console.log(`✅ 找到书籍: ${book.title}`)
 
             // 乐观更新本地状态
             book.progress = (page / (book.totalPages || 1)) * 100
             book.currentPage = page
             book.currentChapter = chapter
+
+            // 关键：保存相对位置，解决懒加载导致的页码变化问题
+            book.readingPosition = {
+                chapterIndex: chapter,
+                relativePageIndex: relativePage,
+                scrollPercentage: scrollPercentage
+            }
+
             book.lastReadAt = new Date().toISOString()
 
             const deviceId = getDeviceId()
+            console.log(`🔐 使用设备ID: ${deviceId}`)
 
             // 尝试云端同步
             try {
+                console.log(`☁️ 发起云端同步请求...`)
                 const response = await axios.patch(`${API_BASE}/books/${bookId}`, {
                     deviceId: deviceId,
                     progress: book.progress,
                     currentPage: book.currentPage,
                     currentChapter: book.currentChapter,
-                    lastReadAt: book.lastReadAt
+                    lastReadAt: book.lastReadAt,
+                    // 同步扩展数据
+                    readingPosition: book.readingPosition
                 }, {
-                    timeout: 5000  // 5秒超时，防止移动端卡顿
+                    timeout: 5000
                 })
+
+                console.log(`☁️ 云端同步响应:`, response.data)
+
+                // 💾 同步更新 sessionStorage 缓存，防止刷新后回退
+                try {
+                    sessionStorage.setItem('books_list', JSON.stringify(this.books))
+                    console.log('💾 阅读进度已更新到本地缓存')
+                } catch (e) {
+                    console.warn('缓存更新失败', e)
+                }
 
                 console.log('✅ 进度已同步到云端')
                 return {

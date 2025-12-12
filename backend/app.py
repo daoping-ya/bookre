@@ -190,12 +190,13 @@ async def process_chapters_background(book_id: str):
 
 @app.post("/api/books/upload")
 async def upload_book_lazy(
-    file: UploadFile = File(...),
-    background_tasks: BackgroundTasks = None
+    file: UploadFile = File(...)
 ):
     """
-    上传书籍 - 懒解析模式
-    秒级返回，后台解析章节内容
+    上传书籍 - 极速懒解析模式
+    - 分块写入大文件，防止内存溢出
+    - 只解析元数据，绝不读取正文
+    - 秒级返回
     """
     book_id = str(int(time.time() * 1000))
     file_ext = file.filename.split('.')[-1].lower()
@@ -204,61 +205,85 @@ async def upload_book_lazy(
         raise HTTPException(400, f"不支持的格式: {file_ext}")
     
     try:
-        # 1. 保存原始文件
+        # 1. 分块写入文件，防止24MB文件导致内存溢出
         original_path = UPLOADS_DIR / f"{book_id}.{file_ext}"
-        content = await file.read()
+        total_size = 0
+        
         with open(original_path, "wb") as f:
-            f.write(content)
+            while chunk := await file.read(1024 * 1024):  # 1MB chunks
+                f.write(chunk)
+                total_size += len(chunk)
         
-        logger.info(f"📤 文件已保存: {original_path} ({len(content)/1024:.1f}KB)")
+        logger.info(f"📤 文件已保存: {original_path} ({total_size/1024/1024:.2f}MB)")
         
-        # 2. 快速解析元数据
+        # 2. 极速解析元数据 (使用新的 zipfile 解析器，不读取正文)
         if file_ext == 'epub':
             parser = EpubLazyParser(str(original_path))
             metadata = parser.parse_metadata_only()
         else:
-            # TXT 直接读取
+            # TXT：简单读取前1000字符作为预览
+            with open(original_path, 'r', encoding='utf-8', errors='ignore') as f:
+                preview = f.read(1000)
+            
+            # 简单分章
             from services.txt_parser import TxtParser
             txt_parser = TxtParser()
+            # 注意：TXT也应该懒加载，这里先简化处理
+            with open(original_path, 'rb') as f:
+                content = f.read()
             metadata = txt_parser.parse(content)
         
-        # 3. 构建书籍数据
+        # 3. 构建精简的书籍数据 (chapters.content 绝对为 None)
+        chapters_meta = []
+        for ch in metadata.get('chapters', []):
+            chapters_meta.append({
+                'index': ch.get('index', 0),
+                'id': ch.get('id', ''),
+                'title': ch.get('title', f'章节'),
+                'href': ch.get('href', ''),
+                'content': None,  # !! 关键：绝对为 None，不占空间
+                'word_count': 0
+            })
+        
         book_data = {
             'id': book_id,
             'title': metadata.get('title', file.filename),
             'author': metadata.get('author', '未知作者'),
-            'cover': metadata.get('cover'),
+            'cover': metadata.get('cover'),  # 封面可能较大，但已限制500KB
             'format': file_ext,
-            'chapters': metadata.get('chapters', []),
-            'totalPages': metadata.get('total_chapters', 0),
+            'chapters': chapters_meta,  # 只有目录，无内容
+            'totalPages': len(chapters_meta),
             'progress': 0,
             'currentPage': 0,
             'currentChapter': 0,
             'createdAt': __import__('datetime').datetime.now().isoformat(),
             'lastReadAt': __import__('datetime').datetime.now().isoformat(),
             'originalFilePath': str(original_path),
-            'parsing_status': 'pending' if file_ext == 'epub' else 'completed'
+            'parsing_status': 'lazy'  # 标记为懒加载模式
         }
         
-        # 4. 保存初始数据
+        # 4. 保存精简JSON (应该只有几KB)
         save_book_json(book_id, book_data)
-        logger.info(f"✅ 书籍已创建: {book_data['title']} (ID: {book_id})")
         
-        # 5. 后台解析章节内容 (仅EPUB)
-        if file_ext == 'epub' and background_tasks:
-            background_tasks.add_task(process_chapters_background, book_id)
-            logger.info(f"🔄 已启动后台解析任务")
+        # 计算JSON大小
+        json_path = BOOKS_DATA_DIR / f"{book_id}.json"
+        json_size = json_path.stat().st_size
+        logger.info(f"✅ 书籍已创建: {book_data['title']} (ID: {book_id}, JSON: {json_size/1024:.1f}KB)")
+        
+        # 5. 不启动后台任务！用户翻页时按需加载
         
         return {
             "book_id": book_id,
             "title": book_data['title'],
             "author": book_data['author'],
             "cover": book_data['cover'],
-            "total_chapters": book_data['totalPages']
+            "total_chapters": len(chapters_meta)
         }
         
     except Exception as e:
         logger.error(f"❌ 上传失败: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(500, f"上传失败: {str(e)}")
 
 @app.get("/api/books/{book_id}/chapter/{index}")

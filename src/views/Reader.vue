@@ -1,5 +1,12 @@
 <template>
   <div class="reader-app" :class="currentTheme">
+    <!-- 全屏初始化遮罩 -->
+    <div v-if="isInitializing" class="init-loading-mask">
+      <div class="loading-content">
+        <div class="spinner"></div>
+        <p>正在准备书籍内容...</p>
+      </div>
+    </div>
     <!-- 顶部导航栏 -->
     <header class="top-bar" :class="{ 'hidden': !showControls }">
       <div class="left-actions">
@@ -41,11 +48,19 @@
                 v-for="(chapter, index) in chapters" 
                 :key="index"
                 class="toc-item"
-                :class="{ active: currentChapter === index }"
-                @click="jumpToChapter(index)"
+                :class="{ 
+                  active: currentChapter === index,
+                  loaded: isChapterLoaded(index),
+                  loading: loadingChapters.has(index),
+                  unloaded: !isChapterLoaded(index) && !loadingChapters.has(index)
+                }"
+                @click="handleChapterClick(index)"
               >
                 <span class="toc-index">{{ index + 1 }}</span>
                 <span class="toc-text">{{ chapter.title }}</span>
+                <span v-if="loadingChapters.has(index)" class="toc-loading">⏳</span>
+                <span v-else-if="isChapterLoaded(index)" class="toc-ready">✓</span>
+                <span v-else class="toc-pending">○</span>
               </div>
               <div v-if="chapters.length === 0" class="empty-tip">
                 暂无目录信息
@@ -288,6 +303,8 @@ const pages = ref([])
 const currentPage = ref(0)
 const currentChapter = ref(0)
 const isLoading = ref(true)
+const isInitializing = ref(true) // 全屏初始化状态
+const isHandlingClick = ref(false) // 点击处理锁
 const showControls = ref(true)
 const showSidebar = ref(null) // 'toc', 'voice', or null
 const showSettings = ref(false)
@@ -316,6 +333,12 @@ const syncStatusText = computed(() => ({
   unknown: '⚪ 检测中'
 }[syncStatus.value] || ''))
 
+// --- 懒加载 & 预加载状态 ---
+const loadingChapters = ref(new Set())  // 正在加载的章节索引
+const loadedChapters = ref(new Set())   // 已加载的章节索引
+const PRELOAD_COUNT = 3  // 预加载后续章节数量
+
+
 // --- 语音状态 ---
 const isPlaying = ref(false)
 const isLoadingVoices = ref(false)
@@ -332,6 +355,7 @@ const playingPageIndex = ref(-1) // 正在播放的音频对应的页码
 let currentFetchController = null // 当前请求的控制器
 let pageTurnTimer = null    // 用于滚轮翻页的冷却计时器
 let scrollBoundaryCounter = 0 // 连续滚动到边界的计数器
+let progressDebounceTimer = null  // 🔧 进度保存防抖计时器（关键修复）
 
 
 // --- 常量定义 ---
@@ -408,47 +432,380 @@ function showToast(message, type = 'info', duration = 2500) {
   }, duration)
 }
 
+// ============ 智能懒加载 & 预加载 ============
+
+/**
+ * 检查章节是否已加载
+ */
+// ============ 智能懒加载 & 预加载 ============
+
+// 请求共享池 (防止重复请求)
+const activeRequests = new Map()
+
+/**
+ * 检查章节是否已加载
+ */
+function isChapterLoaded(index) {
+  if (loadedChapters.value.has(index)) return true
+  const chapter = chapters.value[index]
+  return chapter && chapter.content && chapter.content.length > 20 && !chapter.content.includes('正在加载')
+}
+
+/**
+ * 加载单个章节内容 (支持请求去重)
+ * @param {number} chapterIndex - 章节索引
+ * @param {boolean} isPreload - 是否为预加载（低优先级）
+ * @param {number} timeout - 超时时间（毫秒）
+ * @returns {Promise<boolean>} - 是否加载成功
+ */
+async function loadChapterContent(chapterIndex, isPreload = false, timeout = 15000) {
+  const chapter = chapters.value[chapterIndex]
+  if (!chapter) return false
+  
+  // 1. 检查是否已加载且内容有效
+  if (isChapterLoaded(chapterIndex)) {
+    return true
+  }
+
+  // 2. 检查是否有正在进行的请求（Promise 共享）
+  if (activeRequests.has(chapterIndex)) {
+    if (isPreload) {
+      console.log(`⏳ 预加载跳过：章节 ${chapterIndex} 已在请求中`)
+      return false
+    }
+    console.log(`⏳ 等待章节 ${chapterIndex} 的现有请求...`)
+    try {
+      return await activeRequests.get(chapterIndex)
+    } catch (e) {
+      console.warn(`⚠️ 等待的请求失败，尝试重新发起`)
+      // 如果等待的请求失败了，继续向下执行重新发起
+    }
+  }
+  
+  // 预加载模式下，如果队列太长则放弃
+  if (isPreload && activeRequests.size >= 3) {
+    return false
+  }
+
+  // 3. 发起新请求并存入 Map
+  loadingChapters.value.add(chapterIndex)
+  console.log(`📖 发起加载章节 ${chapterIndex}: ${chapter.title}`)
+
+  // 定义请求逻辑
+  const performRequest = async () => {
+    let timeoutId = null
+    try {
+      // 设置超时
+      const controller = new AbortController()
+      timeoutId = setTimeout(() => controller.abort(), timeout)
+      
+      const fetchedChapter = await booksStore.fetchChapter(bookId, chapterIndex)
+      
+      if (fetchedChapter && fetchedChapter.content) {
+        chapters.value[chapterIndex] = fetchedChapter
+        loadedChapters.value.add(chapterIndex)
+        
+        // 关键修复：等待 Vue 更新 DOM
+        await nextTick()
+        
+        console.log(`✅ 章节 ${chapterIndex} 加载完成 (${fetchedChapter.content.length} 字)`)
+        return true
+      } else {
+        console.warn(`⚠️ 章节 ${chapterIndex} 返回空内容`)
+        return false
+      }
+    } catch (e) {
+      if (e.name === 'AbortError') {
+        console.error(`⏱️ 章节 ${chapterIndex} 加载超时`)
+        showToast(`加载超时，请点击重试`, 'warning')
+      } else {
+        console.error(`❌ 章节 ${chapterIndex} 加载失败:`, e)
+      }
+      return false
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId)
+      loadingChapters.value.delete(chapterIndex)
+      activeRequests.delete(chapterIndex) // 请求结束清理
+    }
+  }
+
+  // 执行请求并保存 Promise
+  const requestPromise = performRequest()
+
+  // 存入 Map
+  activeRequests.set(chapterIndex, requestPromise)
+  
+  return await requestPromise
+}
+
+/**
+ * 预加载当前章节附近的章节 (优化版)
+ */
+async function preloadNearbyChapters(currentIndex) {
+  // 预加载后续 3 章
+  for (let i = 1; i <= 3; i++) {
+    const nextIndex = currentIndex + i
+    if (nextIndex < chapters.value.length) {
+      const chapter = chapters.value[nextIndex]
+      // 只有内容为空时才加载
+      if (!chapter.content || chapter.content.length < 20) {
+        // 预加载模式下，不 await，让它在后台跑，且通过 catch 忽略错误
+        loadChapterContent(nextIndex, true).catch(err => {
+          console.warn(`⚠️ 预加载章节 ${nextIndex} 失败:`, err)
+        })
+      }
+    }
+  }
+}
+
+
+/**
+ * 目录点击处理 - 高优先级加载
+ */
+/**
+ * 目录点击处理 - 高优先级加载
+ */
+async function handleChapterClick(chapterIndex) {
+  console.log(`🎯 用户点击章节 ${chapterIndex}`)
+  if (isHandlingClick.value) return
+  
+  isHandlingClick.value = true
+  try {
+    // 1. 强制加载内容
+    showToast('正在获取内容...', 'info', 1000)
+    const loaded = await loadChapterContent(chapterIndex, false)
+    
+    if (!loaded) {
+      showToast('加载失败，请重试', 'error')
+      return
+    }
+    
+    // 2. 切换当前章节索引
+    currentChapter.value = chapterIndex
+    
+    // 3. 【关键】等待 Vue 渲染 DOM 文本
+    // 数据有了，但 v-if="content" 还没渲染，paginator 会算错
+    await nextTick()
+    
+    // 4. 重新计算分页
+    await paginate()
+    
+    // 5. 跳转到该章第一页
+    // 找到该章节的起始页
+    if (window._pageToChapter) {
+      const targetPage = window._pageToChapter.findIndex(c => c === chapterIndex)
+      if (targetPage !== -1) {
+        currentPage.value = targetPage
+      }
+    }
+    
+    // 6. 自动关闭侧边栏
+    closeSidebar()
+    
+    // 7. 预加载
+    preloadNearbyChapters(chapterIndex)
+    
+  } finally {
+    isHandlingClick.value = false
+  }
+}
+
+
+
+// 监听当前章节变化，触发预加载
+watch(currentChapter, (newChapter) => {
+  if (newChapter >= 0) {
+    preloadNearbyChapters(newChapter)
+  }
+})
+
+// 标记是否正在重新分页中，防止重复触发
+let isRepaginating = false
+
+// 监听当前页码，检测是否需要加载新章节
+watch(currentPage, async (newPage) => {
+  if (!window._pageToChapter || isRepaginating) return
+  
+  const chapterIndex = window._pageToChapter[newPage]
+  if (chapterIndex === undefined) return
+  
+  // 更新当前章节
+  currentChapter.value = chapterIndex
+  
+  const chapter = chapters.value[chapterIndex]
+  if (!chapter) return
+  
+  // 如果当前页的章节内容是占位符，立即加载
+  if (!chapter.content || chapter.content.includes('正在加载')) {
+    console.log(`📖 翻页触发加载章节 ${chapterIndex}`)
+    const loaded = await loadChapterContent(chapterIndex, false)
+    if (loaded) {
+      // 重新分页以显示加载的内容
+      isRepaginating = true
+      await paginate()
+      isRepaginating = false
+      
+      // 跳转到该章节的第一页
+      const newTargetPage = window._pageToChapter.findIndex(c => c === chapterIndex)
+      if (newTargetPage !== -1 && newTargetPage !== currentPage.value) {
+        currentPage.value = newTargetPage
+      }
+    }
+  }
+  
+  // 预加载附近章节
+  preloadNearbyChapters(chapterIndex)
+}, { immediate: false })
+
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown)
   saveSettings()
   stopVoice()
   clearAudioCache()
+  // 清理加载状态
+  loadingChapters.value.clear()
+  loadedChapters.value.clear()
 })
 
 // --- 核心逻辑 ---
 async function loadBookData() {
   isLoading.value = true
   try {
-    // 从后端获取完整书籍内容 (包括章节)
-    currentBook.value = await booksStore.fetchBookContent(bookId)
-    console.log('当前书籍:', currentBook.value) // 调试
-    
-    if (!currentBook.value) {
+    // 1. 获取书籍元数据
+    const bookData = await booksStore.fetchBookContent(bookId)
+    if (!bookData) {
       alert('书籍未找到')
       router.push('/')
       return
     }
+    currentBook.value = bookData
+    chapters.value = bookData.chapters || []
     
-    // 加载章节
-    chapters.value = currentBook.value.chapters || []
-    console.log('加载的章节数:', chapters.value.length) // 调试
-    console.log('第一个章节示例:', chapters.value[0]) // 调试
+    console.log(`📚 书籍加载: ${bookData.title}, 章节数: ${chapters.value.length}`)
+    console.log(`📦 原始数据:`, {
+      currentPage: bookData.currentPage,
+      currentChapter: bookData.currentChapter,
+      readingPosition: bookData.readingPosition
+    })
     
-    // 分页处理
+    // 2. 🔧 获取上次阅读位置（完全重构，优先使用 readingPosition）
+    const readingPos = bookData.readingPosition || {}
+    let lastChapterIndex = readingPos.chapterIndex ?? bookData.currentChapter ?? 0
+    let lastRelativePage = readingPos.relativePageIndex ?? 0
+    
+    console.log(`📍 恢复目标: 章节=${lastChapterIndex}, 相对页=${lastRelativePage}`)
+    
+    // 3. 检查目标章节是否有内容
+    if (lastChapterIndex >= 0 && lastChapterIndex < chapters.value.length) {
+      if (!isChapterLoaded(lastChapterIndex)) {
+        console.log(`⏳ 强制加载目标章节 ${lastChapterIndex}...`)
+        await loadChapterContent(lastChapterIndex, false)
+        console.log(`✅ 目标章节已加载`)
+      } else {
+        console.log(`✅ 目标章节已存在，跳过加载`)
+      }
+    }
+    
+    // 4. 内容就绪后分页
+    console.log(`🔢 开始分页计算...`)
     await paginate()
-    console.log('分页后的总页数:', pages.value.length) // 调试
+    console.log(`🔢 分页计算完成，总页数: ${pages.value.length}`)
     
-    // 恢复进度
-    if (currentBook.value.currentPage) {
-      currentPage.value = Math.min(currentBook.value.currentPage, totalPages.value - 1)
+    // 5. 🔧 跳转到正确位置（完全重构，增加详细日志）
+    if (lastChapterIndex >= 0 && window._pageToChapter) {
+      // 找到该章节所有的页码
+      const chapterPages = []
+      window._pageToChapter.forEach((chIdx, pgIdx) => {
+        if (chIdx === lastChapterIndex) chapterPages.push(pgIdx)
+      })
+      
+      console.log(`🎯 章节 ${lastChapterIndex} 的页码范围:`, chapterPages)
+      
+      if (chapterPages.length > 0) {
+        let targetPage = 0
+        // 尝试恢复到章内相对页码
+        if (lastRelativePage < chapterPages.length) {
+          targetPage = chapterPages[lastRelativePage]
+          console.log(`✅ 恢复到相对页 ${lastRelativePage} → 全局页 ${targetPage}`)
+        } else {
+          // 如果超出了（比如因为字体变大导致页数变少），则跳到该章最后一页
+          targetPage = chapterPages[chapterPages.length - 1]
+          console.warn(`⚠️ 相对页 ${lastRelativePage} 超出范围，跳到该章最后一页 ${targetPage}`)
+        }
+        currentPage.value = targetPage
+      } else {
+        // 没找到该章的页码（可能分页出错了），跳到第一页保底
+        console.error(`❌ 致命错误：找不到章节 ${lastChapterIndex} 的任何页码！重置到第0页`)
+        currentPage.value = 0
+      }
+    } else {
+      console.warn('⚠️ 跳转条件不满足，保持默认页码')
     }
-    if (currentBook.value.currentChapter) {
-      currentChapter.value = currentBook.value.currentChapter
-    }
+    
+    // 更新当前章节状态
+    currentChapter.value = lastChapterIndex
+    console.log(`🎯 最终定位: 章节=${currentChapter.value}, 页码=${currentPage.value}`)
+    
   } catch (e) {
     console.error('加载书籍失败', e)
+    alert('书籍加载失败')
+    router.push('/')
   } finally {
     isLoading.value = false
+    // 只有在一切就绪后才移除初始遮罩
+    // 稍微延迟一点，让用户看到渲染好的页面而不是瞬间跳变
+    setTimeout(() => {
+      isInitializing.value = false
+    }, 100)
+  }
+}
+
+// 🔧 自动保存进度（完全重构）
+watch([currentChapter, currentPage], (newVals, oldVals) => {
+  console.log(`📊 进度变化检测: 章节 ${newVals[0]}, 页码 ${newVals[1]}`)
+  
+  // 防抖保存
+  if (progressDebounceTimer) clearTimeout(progressDebounceTimer)
+  progressDebounceTimer = setTimeout(() => {
+    saveProgressRealTime()  // 移除了async，在函数内部已经是async
+  }, 800) // 增加到800ms，避免频繁触发
+}, { deep: false })
+
+// 🔧 保存进度（完全重构，增加详细日志）
+async function saveProgressRealTime() {
+  if (!currentBook.value) {
+    console.warn('⚠️ saveProgressRealTime: currentBook为空，跳过保存')
+    return
+  }
+  
+  console.log(`💾 开始保存进度: 书籍ID=${bookId}, 当前章节=${currentChapter.value}, 当前页=${currentPage.value}`)
+  
+  // 计算相对位置：当前页码 - 当前章节的第一页码
+  let relativePage = 0
+  if (window._pageToChapter) {
+    const startPage = window._pageToChapter.findIndex(c => c === currentChapter.value)
+    if (startPage !== -1 && currentPage.value >= startPage) {
+      relativePage = currentPage.value - startPage
+      console.log(`📍 计算相对位置: 章节起始页=${startPage}, 相对页=${relativePage}`)
+    } else {
+      console.warn(`⚠️ 无法计算相对页码: startPage=${startPage}, currentPage=${currentPage.value}`)
+    }
+  } else {
+    console.warn('⚠️ window._pageToChapter 不存在，无法计算相对位置')
+  }
+  
+  // 使用当前状态而不是 store 中的状态，确保最新
+  try {
+    const result = await booksStore.updateProgress(
+      bookId, 
+      currentPage.value, 
+      currentChapter.value, 
+      relativePage,
+      0 // scrollPercentage 以后可以加
+    )
+    console.log(`✅ 进度保存完成:`, result)
+  } catch (error) {
+    console.error(`❌ 进度保存失败:`, error)
   }
 }
 
@@ -509,9 +866,19 @@ async function paginate() {
       }
     })
     
+
+    
     if (currentChunk) {
       newPages.push(currentChunk)
       chapterMap.push(cIndex)
+    }
+
+    // 关键修正：如果该章节处理完后没有产生任何页面（例如内容为空或全是空行）
+    // 强制添加一个空白页，防止页面映射断裂导致无法跳转
+    if (chapterMap.length === 0 || chapterMap[chapterMap.length - 1] !== cIndex) {
+       console.warn(`⚠️ 章节 ${cIndex} 未产生页面，添加占位页`)
+       newPages.push(chapter.content ? '(本章内容为空白)' : '(正在加载...)')
+       chapterMap.push(cIndex)
     }
   }
 
@@ -522,6 +889,27 @@ async function paginate() {
 
   pages.value = newPages
   window._pageToChapter = chapterMap
+  // 遍历所有章节
+  for (let cIndex = 0; cIndex < chapters.value.length; cIndex++) {
+    // ... (章节加载逻辑略) ...
+
+    // 防御性编程：在计算高度前确认DOM是否存在（如果使用高度计算法）
+    // 当前使用字符估算法，不需要DOM高度，但需要确认内容已渲染
+    // 如果该章节是当前章节，且 content 为空，则等待
+    /*
+    if (cIndex === currentChapter.value && !chapter.content) {
+       console.warn('⚠️ 分页警告：当前章节内容尚未就绪')
+    }
+    */
+    
+    // ... (字符计算逻辑不变) ...
+  }
+  
+  // ... (分页收尾) ...
+
+  pages.value = newPages
+  window._pageToChapter = chapterMap
+  console.log(`✅ 分页完成: 共 ${pages.value.length} 页`)
   await nextTick()
 }
 
@@ -683,8 +1071,6 @@ function handleProgressClick(e) {
   updateProgress()
 }
 
-// 防抖计时器
-let progressDebounceTimer = null
 
 async function updateProgress(showFeedback = false) {
   // 更新当前章节
@@ -1588,6 +1974,51 @@ function clearAudioCache() {
 .toc-index {
   opacity: 0.6;
   font-size: 0.9em;
+}
+
+.toc-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 目录加载状态样式 */
+.toc-item.loaded {
+  color: inherit;
+}
+
+.toc-item.unloaded {
+  opacity: 0.6;
+}
+
+.toc-item.unloaded .toc-text {
+  font-style: italic;
+}
+
+.toc-item.loading {
+  opacity: 0.8;
+  background-color: rgba(99, 102, 241, 0.1);
+}
+
+.toc-loading {
+  animation: pulse 1s infinite;
+  font-size: 14px;
+}
+
+.toc-ready {
+  color: #22c55e;
+  font-size: 14px;
+}
+
+.toc-pending {
+  opacity: 0.4;
+  font-size: 12px;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
 }
 
 /* 语音面板样式 */
